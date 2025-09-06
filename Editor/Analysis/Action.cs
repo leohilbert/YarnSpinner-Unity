@@ -2,12 +2,14 @@
 Yarn Spinner is licensed to you under the terms found in the file LICENSE.md.
 */
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+#nullable enable
 
 namespace Yarn.Unity.ActionAnalyser
 {
@@ -55,8 +57,14 @@ namespace Yarn.Unity.ActionAnalyser
         /// </summary>
         Function,
         /// <summary>
+        /// The method may have been intended to be an action, but its type
+        /// cannot be determined.
+        /// </summary>
+        Invalid,
+        /// <summary>
         /// The method is not a Yarn action.
         /// </summary>
+
         NotAnAction,
     }
 
@@ -102,29 +110,15 @@ namespace Yarn.Unity.ActionAnalyser
         public ITypeSymbol Type;
     }
 
-    public class Diagnostic
-    {
-        public Diagnostic(string message, SyntaxNode node)
-        {
-            this.Message = message;
-
-            this.Range = node.GetLocation().GetLineSpan();
-        }
-
-        public Diagnostic(string message, SyntaxToken token)
-        {
-            this.Message = message;
-
-            this.Range = token.GetLocation().GetLineSpan();
-        }
-
-        public Range Range { get; private set; }
-
-        public string Message { get; private set; }
-    }
-
     public class Action
     {
+        public Action(string name, ActionType type, IMethodSymbol methodSymbol)
+        {
+            Name = name;
+            Type = type;
+            MethodSymbol = methodSymbol;
+        }
+
         /// <summary>
         /// The name of this action.
         /// </summary>
@@ -138,7 +132,7 @@ namespace Yarn.Unity.ActionAnalyser
         /// <summary>
         /// The declaration of this action's method, if available.
         /// </summary>
-        public SyntaxNode Declaration { get; internal set; }
+        public SyntaxNode? Declaration { get; internal set; }
 
         /// <summary>
         /// The type of the action.
@@ -159,18 +153,18 @@ namespace Yarn.Unity.ActionAnalyser
         /// The <see cref="Microsoft.CodeAnalysis.SemanticModel"/> that can be
         /// used to answer semantic queries about this method.
         /// </summary>
-        internal SemanticModel SemanticModel { get; set; }
+        internal SemanticModel? SemanticModel { get; set; }
 
         /// <summary>
         /// The fully-qualified name for this method, including the global
         /// prefix.
         /// </summary>
-        public string MethodName { get; internal set; }
+        public string? MethodName { get; set; }
 
         /// <summary>
         /// Gets the short form of the method, essentially the easy to read form of <see cref="MethodName"/>.
         /// </summary>
-        public string MethodIdentifierName { get; internal set; }
+        public string? MethodIdentifierName { get; internal set; }
 
         /// <summary>
         /// Whether this action is a static method, or an instance method.
@@ -180,87 +174,170 @@ namespace Yarn.Unity.ActionAnalyser
         /// <summary>
         /// Gets the path to the file that this action was declared in.
         /// </summary>
-        public string SourceFileName { get; internal set; }
+        public string? SourceFileName { get; internal set; }
+
+        /// <summary>
+        /// The syntax node for the method declaration associated with this action.
+        /// </summary>
+        public SyntaxNode? MethodDeclarationSyntax { get; internal set; }
 
         // The names of the methods that register commands and functions
         private const string AddCommandHandlerMethodName = "AddCommandHandler";
         private const string AddFunctionMethodName = "AddFunction";
+        private const string RegisterFunctionDeclarationName = "RegisterFunctionDeclaration";
 
         /// <summary>
         /// The list of parameters that this action takes.
         /// </summary>
         public List<Parameter> Parameters = new List<Parameter>();
 
-        public bool Validate(out Diagnostic failureReason)
+        public List<Microsoft.CodeAnalysis.Diagnostic> Validate(Compilation compilation)
         {
-            var methodDeclaration = Declaration as MethodDeclarationSyntax;
-
-            if (methodDeclaration == null)
+            var diagnostics = new List<Microsoft.CodeAnalysis.Diagnostic>();
+            if (this.MethodDeclarationSyntax == null)
             {
-                throw new NotImplementedException("Todo: handle case where action's method is not a MethodDeclaration");
+                // No declaration syntax - we have nowhere to attach any diagnostics to
+                return diagnostics;
+            }
+
+            Location diagnosticLocation;
+            string identifier;
+
+            if (this.Declaration is MethodDeclarationSyntax methodDeclarationSyntax)
+            {
+                diagnosticLocation = methodDeclarationSyntax.Identifier.GetLocation();
+                identifier = methodDeclarationSyntax.Identifier.ToString();
+            }
+            else
+            {
+                diagnosticLocation = this.MethodDeclarationSyntax.GetLocation();
+                identifier = "(anonymous function)";
+            }
+
+            // Commands are parsed as whitespace, so spaces in the command name
+            // would render the command un-callable.
+            if (Name.Any(x => Char.IsWhiteSpace(x)))
+            {
+                diagnostics.Add(Diagnostic.Create(Diagnostics.YS1002ActionMethodsMustHaveAValidName, this.MethodDeclarationSyntax.GetLocation(), this.Name));
+            }
+
+            if (this.Name == null)
+            {
+                throw new NullReferenceException("Action name is null");
+            }
+
+            if (this.MethodSymbol == null)
+            {
+                throw new NullReferenceException($"Method symbol for {Name} is null");
+            }
+
+            // Actions that are registered via an attribute must be publicly
+            // accessible
+            if (this.DeclarationType == DeclarationType.Attribute)
+            {
+                if (MethodSymbol.DeclaredAccessibility != Accessibility.Public)
+                {
+                    // The method is not public
+                    diagnostics.Add(Diagnostic.Create(
+                        Diagnostics.YS1001ActionMethodsMustBePublic,
+                        diagnosticLocation, identifier, MethodSymbol.DeclaredAccessibility));
+                }
+                else
+                {
+                    var containingType = MethodSymbol.ContainingType;
+
+                    while (containingType != null)
+                    {
+                        if (containingType.DeclaredAccessibility != Accessibility.Public)
+                        {
+                            // The method is public, but it's within a type that
+                            // is not
+                            var typeName = containingType.Name ?? "(anonymous)";
+                            diagnostics.Add(Diagnostic.Create(
+                                Diagnostics.YS1007ActionsMustBeInPublicTypes,
+                                diagnosticLocation, identifier, typeName, containingType.DeclaredAccessibility));
+                            break;
+                        }
+                        containingType = containingType.ContainingType;
+                    }
+
+                }
             }
 
             switch (Type)
             {
-                case ActionType.NotAnAction:
+                case ActionType.Invalid:
                     {
                         var actionAttributes = MethodSymbol.GetAttributes().Where(attr => Analyser.IsAttributeYarnCommand(attr));
 
                         var count = actionAttributes.Count();
 
-                        if (count == 0)
+                        if (count != 1)
                         {
-                            failureReason = new Diagnostic("Actions require a YarnCommand or YarnFunction attribute", methodDeclaration.Identifier);
-                        }
-                        else if (count > 1)
-                        {
-                            failureReason = new Diagnostic("Actions can only have one YarnCommand or YarnFunction attribute", methodDeclaration.Identifier);
+                            diagnostics.Add(Diagnostic.Create(Diagnostics.YS1005ActionMethodsMustHaveOneActionAttribute, diagnosticLocation, 0));
                         }
                         else
                         {
-                            failureReason = new Diagnostic("Internal error: unknown reason", methodDeclaration.Identifier);
+                            diagnostics.Add(Diagnostic.Create(Diagnostics.YS1000UnknownError, diagnosticLocation, "Method marked as 'not an action' but it had one attribute"));
                         }
-
-                        return false;
                     }
+                    break;
 
                 case ActionType.Command:
-                    return ValidateCommand(out failureReason);
+                    diagnostics.AddRange(ValidateCommand(compilation));
+                    break;
 
                 case ActionType.Function:
-                    return ValidateFunction(out failureReason);
+                    diagnostics.AddRange(ValidateFunction(compilation));
+                    break;
 
                 default:
-                    failureReason = new Diagnostic($"Internal error: invalid type {Type}", methodDeclaration.Identifier);
-                    return false;
+                    diagnostics.Add(Diagnostic.Create(Diagnostics.YS1000UnknownError, diagnosticLocation, $"Internal error: invalid type {Type}"));
+                    break;
             }
+
+            return diagnostics;
         }
 
-        private bool ValidateFunction(out Diagnostic failureReason)
+        private IEnumerable<Diagnostic> ValidateFunction(Compilation compilation)
         {
-            var methodDeclaration = Declaration as MethodDeclarationSyntax;
 
-            if (methodDeclaration == null)
+            string identifier;
+            Location returnTypeLocation;
+            Location identifierLocation;
+
+            if (this.Declaration == null)
             {
-                throw new NotImplementedException("Todo: handle case where action's method is not a MethodDeclaration");
+                // No declaration - we can't attach any diagnostics
+                yield break;
             }
 
-            var methodSymbol = this.MethodSymbol as IMethodSymbol;
+            if (this.Declaration is MethodDeclarationSyntax methodDeclarationSyntax)
+            {
+                identifierLocation = methodDeclarationSyntax.Identifier.GetLocation();
+                returnTypeLocation = methodDeclarationSyntax.ReturnType.GetLocation();
+                identifier = methodDeclarationSyntax.Identifier.ToString();
+            }
+            else
+            {
+                identifierLocation = Declaration.GetLocation();
+                returnTypeLocation = this.Declaration.GetLocation();
+                identifier = "(anonymous function)";
+            }
 
-            if (methodSymbol == null)
+            if (this.MethodSymbol == null)
             {
                 throw new NotImplementedException("Todo: handle case where action's method is not a IMethodSymbol");
             }
 
             // Functions must be static
-            if (methodSymbol.IsStatic == false)
+            if (this.MethodSymbol.MethodKind == MethodKind.Ordinary && this.MethodSymbol.IsStatic == false)
             {
-                failureReason = new Diagnostic("Yarn functions must be static", methodDeclaration.Identifier);
-                return false;
+                yield return Diagnostic.Create(Diagnostics.YS1006YarnFunctionsMustBeStatic, identifierLocation);
             }
 
             // Functions must return a number, string, or bool
-            var returnTypeSymbol = methodSymbol.ReturnType;
+            var returnTypeSymbol = this.MethodSymbol.ReturnType;
 
             switch (returnTypeSymbol.SpecialType)
             {
@@ -279,22 +356,99 @@ namespace Yarn.Unity.ActionAnalyser
                 case SpecialType.System_String:
                     break;
                 default:
-                    failureReason = new Diagnostic("Functions must return numbers, strings, or bools", methodDeclaration.ReturnType);
-                    return false;
+                    yield return Diagnostic.Create(Diagnostics.YS1004FunctionMethodsMustHaveAValidReturnType, returnTypeLocation, identifier, returnTypeSymbol.ToString());
+                    break;
 
             }
-
-            failureReason = null;
-            return true;
         }
 
-        private bool ValidateCommand(out Diagnostic failureReason)
+        private IEnumerable<Diagnostic> ValidateCommand(Compilation compilation)
         {
-            throw new NotImplementedException();
+            if (MethodSymbol == null)
+            {
+                throw new NullReferenceException("Method symbol is null");
+            }
+
+            List<ITypeSymbol> validCommandReturnTypes = new List<ITypeSymbol?> {
+                    compilation.GetTypeByMetadataName("UnityEngine.Coroutine"),
+                    compilation.GetTypeByMetadataName("System.Collections.IEnumerator"),
+                    compilation.GetSpecialType(SpecialType.System_Void),
+                }
+                .NonNull(throwIfAnyNull: true)
+                .ToList();
+
+            List<ITypeSymbol> validTaskTypes = new List<ITypeSymbol?> {
+                    compilation.GetTypeByMetadataName("System.Threading.Tasks.Task"),
+                    compilation.GetTypeByMetadataName("Cysharp.Threading.Tasks.UniTask"),
+                    compilation.GetTypeByMetadataName("UnityEngine.Awaitable"),
+                    compilation.GetTypeByMetadataName("Yarn.Unity.YarnTask"),
+            }.NonNull(throwIfAnyNull: false)
+            .ToList();
+
+            // Explicitly ban 'string' as a return type - strings implement
+            // IEnumerator, but they're not coroutines. We'll need to manually
+            // exclude this.
+            List<ITypeSymbol> knownInvalidCommandReturnTypes = new List<ITypeSymbol?> {
+                    compilation.GetSpecialType(SpecialType.System_String),
+                }
+                .NonNull(throwIfAnyNull: true)
+                .ToList();
+
+            // Functions must return void, IEnumerator, Coroutine, or an awaitable type
+            var returnTypeSymbol = MethodSymbol.ReturnType;
+
+            Location returnTypeLocation;
+            string identifier;
+            string returnTypeName;
+            if (this.MethodDeclarationSyntax is MethodDeclarationSyntax methodDeclaration)
+            {
+                returnTypeLocation = methodDeclaration.ReturnType.GetLocation();
+                identifier = methodDeclaration.Identifier.ToString();
+                returnTypeName = methodDeclaration.ReturnType.ToString();
+            }
+            else if (this.MethodDeclarationSyntax is LocalFunctionStatementSyntax localFunctionStatement)
+            {
+                returnTypeLocation = localFunctionStatement.ReturnType.GetLocation();
+                identifier = localFunctionStatement.Identifier.ToString();
+                returnTypeName = localFunctionStatement.ReturnType.ToString();
+            }
+            else if (this.MethodDeclarationSyntax is LambdaExpressionSyntax lambdaExpression)
+            {
+                returnTypeLocation = lambdaExpression.GetLocation();
+                identifier = "(lambda expression)";
+                returnTypeName = returnTypeSymbol.Name;
+            }
+            else
+            {
+                throw new InvalidOperationException($"Expected decl for {this.Name} ({this.SourceFileName}) was of unexpected type {this.MethodDeclarationSyntax?.GetType().Name ?? "null"}");
+            }
+
+
+            var typeIsKnownValid = validCommandReturnTypes.Contains(returnTypeSymbol)
+                || validTaskTypes.Contains(returnTypeSymbol);
+            var typeIsKnownInvalid = knownInvalidCommandReturnTypes.Contains(returnTypeSymbol);
+
+            var returnTypeIsValid = typeIsKnownValid && !typeIsKnownInvalid;
+
+            if (returnTypeIsValid == false)
+            {
+                yield return Diagnostic.Create(Diagnostics.YS1003CommandMethodsMustHaveAValidReturnType,
+                                               returnTypeLocation,
+                                               identifier,
+                                               returnTypeName);
+            }
         }
 
         public SyntaxNode GetRegistrationSyntax(string dialogueRunnerVariableName = "dialogueRunner")
         {
+            if (MethodSymbol == null)
+            {
+                throw new NullReferenceException("Method symbol is null");
+            }
+            if (Name == null)
+            {
+                throw new NullReferenceException("Action name is null");
+            }
             string registrationMethodName;
             switch (Type)
             {
@@ -329,7 +483,7 @@ namespace Yarn.Unity.ActionAnalyser
                 typeArguments = typeArguments.Append(SyntaxFactory.ParseTypeName(returnType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
             }
 
-            if (typeArguments.Any() && MethodSymbol.IsStatic == true)
+            if (typeArguments.Any() && MethodSymbol?.IsStatic == true)
             {
                 // This method needs to be specified with type arguments, so
                 // we'll need to call the appropriate generic version of
@@ -379,7 +533,8 @@ namespace Yarn.Unity.ActionAnalyser
             return invocationStatement;
         }
 
-        public ExpressionSyntax GetReferenceSyntaxForRegistration() {
+        public ExpressionSyntax GetReferenceSyntaxForRegistration()
+        {
             // Create an expression that refers to the type that contains the
             // method we're registering.
             var containingTypeExpression = SyntaxFactory.ParseName(MethodSymbol.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
@@ -392,12 +547,15 @@ namespace Yarn.Unity.ActionAnalyser
                 SyntaxFactory.IdentifierName(MethodSymbol.Name)
             );
 
-            if (IsStatic) {
-                
+            if (IsStatic)
+            {
+
                 // If the method is static, we can use the reference to the method directly.
                 return methodReference;
 
-            } else {
+            }
+            else
+            {
                 // If the method is not static, we must create a MethodInfo for this method, like this:
                 // typeof(ContainingType)
                 //    .GetMethod(nameof(ContainingType.Method), 
@@ -417,16 +575,35 @@ namespace Yarn.Unity.ActionAnalyser
                     return SyntaxFactory.TypeOfExpression(type);
                 });
 
-                var nameOfMethod = SyntaxFactory.InvocationExpression(
-                    SyntaxFactory.ParseName(nameOfIdentifier), 
-                    SyntaxFactory.ArgumentList(
-                        SyntaxFactory.SeparatedList(
-                            new[] { 
-                                SyntaxFactory.Argument(methodReference) 
-                            }
+                ExpressionSyntax nameOfMethod;
+
+                if (MethodSymbol.DeclaredAccessibility != Accessibility.Public)
+                {
+                    // The method is not public, so we can't use nameof() on it,
+                    // because it would cause a compiler error. Instead, we'll have to
+                    // refer to the method by name.
+                    nameOfMethod = SyntaxFactory.LiteralExpression(
+                        SyntaxKind.StringLiteralExpression,
+                        SyntaxFactory.Literal(MethodName ?? MethodSymbol.Name)
+                    );
+                }
+                else
+                {
+                    // The method is public, so we can use nameof() to refer to
+                    // it in a more durable way.
+
+                    nameOfMethod = SyntaxFactory.InvocationExpression(
+                        SyntaxFactory.ParseName(nameOfIdentifier),
+                        SyntaxFactory.ArgumentList(
+                            SyntaxFactory.SeparatedList(
+                                new[] {
+                                    SyntaxFactory.Argument(methodReference)
+                                }
+                            )
                         )
-                    )
-                );
+                    );
+                }
+
 
                 var arrayOfTypeParameters = SyntaxFactory.ArrayCreationExpression(
                     SyntaxFactory.ArrayType(
@@ -451,16 +628,16 @@ namespace Yarn.Unity.ActionAnalyser
                 );
 
                 var getMethod = SyntaxFactory.MemberAccessExpression(
-                    SyntaxKind.SimpleMemberAccessExpression, 
-                    typeOfContainingTypeExpression, 
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    typeOfContainingTypeExpression,
                     SyntaxFactory.IdentifierName(getMethodIdentifier)
                 );
 
                 var getMethodArguments = SyntaxFactory.ArgumentList(
                     SyntaxFactory.SeparatedList(
                         new[] {
-                            SyntaxFactory.Argument(nameOfMethod), 
-                            SyntaxFactory.Argument(arrayOfTypeParameters) 
+                            SyntaxFactory.Argument(nameOfMethod),
+                            SyntaxFactory.Argument(arrayOfTypeParameters)
                         }
                     )
                 );
@@ -469,6 +646,66 @@ namespace Yarn.Unity.ActionAnalyser
 
                 return getMethodInvocation;
             }
+        }
+
+        public SyntaxNode GetFunctionDeclarationSyntax(string dialogueRunnerVariableName = "dialogueRunner")
+        {
+            var typeOfMethodReturn = SyntaxFactory.TypeOfExpression(SyntaxFactory.ParseTypeName(MethodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
+            var typeOfMethodParameters = MethodSymbol.Parameters.Select(p =>
+            {
+                string typeName = p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                TypeSyntax type = SyntaxFactory.ParseTypeName(typeName);
+                return SyntaxFactory.TypeOfExpression(type);
+            });
+
+            var arrayOfTypeParameters = SyntaxFactory.ArrayCreationExpression(
+                    SyntaxFactory.ArrayType(
+                        SyntaxFactory.ParseTypeName("System.Type"),
+                        SyntaxFactory.List(
+                            new[] {
+                                SyntaxFactory.ArrayRankSpecifier(
+                                    SyntaxFactory.SingletonSeparatedList<ExpressionSyntax>(
+                                        SyntaxFactory.OmittedArraySizeExpression()
+                                    )
+                                )
+                            }
+                        )
+                    ),
+                    SyntaxFactory.InitializerExpression(
+                        SyntaxKind.ArrayInitializerExpression,
+
+                        SyntaxFactory.SeparatedList<ExpressionSyntax>(
+                            typeOfMethodParameters
+                        )
+                    )
+                );
+
+            var argumentsToRegisterCall = SyntaxFactory.ArgumentList().AddArguments(new[]{
+                SyntaxFactory.Argument(
+                    SyntaxFactory.LiteralExpression(
+                        SyntaxKind.StringLiteralExpression,
+                        SyntaxFactory.Literal(this.Name)
+                    )
+                ),
+                SyntaxFactory.Argument(typeOfMethodReturn),
+                SyntaxFactory.Argument(arrayOfTypeParameters)
+            });
+
+            // Create the expression that refers to the
+            // 'RegisterFunctionDeclaration' instance method on the dialogue
+            // runner variable name we were provided.
+            var registerFunctionMethodAccess = SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                SyntaxFactory.IdentifierName(dialogueRunnerVariableName),
+                SyntaxFactory.Token(SyntaxKind.DotToken),
+                SyntaxFactory.IdentifierName(RegisterFunctionDeclarationName)
+                );
+
+            var registerFunctionMethodInvocation = SyntaxFactory.InvocationExpression(registerFunctionMethodAccess, argumentsToRegisterCall);
+
+            var invocationStatement = SyntaxFactory.ExpressionStatement(registerFunctionMethodInvocation);
+
+            return invocationStatement;
         }
     }
 }

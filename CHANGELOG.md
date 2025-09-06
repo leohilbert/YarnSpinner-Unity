@@ -12,6 +12,261 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Removed
 
+## [3.0.3] 2025-06-21
+
+### Added
+
+- Added a `[br /]` markup tag into the common markers default markup palette.
+  - This will be translated into a TextMeshPro `<br>` marker.
+- Line Advancer will now fall back to using key codes if Input Actions are selected, but Unity Input System is not available.
+- The Dialogue System prefab now creates a UI input module that matches your current input system when it's added to the scene, rather than baking in a specific input module.
+
+### Changed
+
+- Fixed a bug where `LinePresenter` would not run all registered action markup handlers during a typewriter effect.
+- Fixed an issue where the default Dialogue Runner prefab didn't have its `LineAdvancer` component configured correctly.
+- Renamed `actionMarkupHandlers` to be `eventHandlers` on the `LinePresenter`, this fixes an easy to occur typo with the base classes `ActionMarkupHandlers`.
+- Fixed an issue where Line Advancers set to use Key Codes would not work when the Legacy Input Manager is not available.
+
+## [3.0.2] 2025-06-13
+
+### Added
+
+- The inspector for the Dialogue Runner now has a drop down for selecting the saliency strategy.
+- `VariableStorageBehaviour` now supports adding a variable change listener for _all_ variables.
+
+### Changed
+
+- The Yarn Spinner header in the Inspector no longer shows `<u></u>` markup in versions of Unity prior to Unity 6.
+- `LinePresenter` now implements its typewriter effect with `BasicTypewriter`, an implementation of the `IAsyncTypewriter` interface. 
+- The typewriter effect in `LinePresenter` is now framerate-independent.
+- Fixed an issue in UnityLocalisedLineProvider where an exception would be thrown if an asset table was not provided.
+
+### Removed
+
+- `SerializableDictionary<TKey,TValue>` no longer exposes non-generic `IDictionary` methods; instead, all operations are now correctly type-checked.
+
+## [3.0.0] 2025-05-16
+
+### Added
+
+- A basic saliency sample to show off the basics and how to get started with storylets.
+- Logo and docs/help links to custom editors in Yarn Project (standalone), Yarn Script (standalone), and Dialogue Runner (component when on GameObject).
+- Description of package samples which summarises Samples therein.
+- Updated a few out-of-date HelpUrl values which referenced v1 docs.
+- Default Yarn Project exlude patterns updated to ignore the standard samples folders
+- Functions that are registered using the `AddFunction` method are now supported by the Yarn Spinner compiler.
+- YarnPackageImporter now has an install samples menu item in `Window -> Yarn Spinner -> Install Samples`
+- 'Incorrect number of parameters' error messages when running commands will now show more detailed error messages if available.
+- Yarn scripts can now directly link to vscode for situations where you want to use that as your Yarn editor but have another editor as your C# editor.
+- `UnityLocalisedLineProvider` now supports [fallback locales](https://docs.unity3d.com/Packages/com.unity.localization@1.5/manual/Locale.html#fallbacks).
+- `UnityLocalisedLineProvider` now supports shadow lines.
+- `BuiltinLocalisedLineProvider` now supports falling back to different locale.
+- `DialogueRunner.DialogueTask` now completes after all dialogue presenters finish their `OnDialogueComplete` method call, rather than before.
+- The `DialogueRunner.onDialogueComplete` event is now invoked after all dialogue presenters finish their `OnDialogueComplete` method call, rather than before.
+
+### Changed
+
+- Fixed an error that caused the YarnProject asset editor to incorrectly report a compile error when there wasn't one.
+- Certain errors thrown when a command can't be run now show the full text of the command, not just the command name.
+- The default Yarn Spinner Script template is now no longer an empty node.
+- Renamed 'Dialogue View Script' menu item to 'Dialogue Presenter Script'.
+- Added `DialogueRunner.DialoguePresenters` (and marked `DialogueRunner.DialogueViews` as obsolete.)
+- Fixed a lot of missing null checks
+- Fixed a bug in SampleRenderDetector that caused build errors.
+- Menu for creating a prefab dialogue system now says "Dialogue System" instead of "Dialogue Runner"
+- Line Advancer will now advance to the next line if the line presenter is finished presentation and is awaiting input and the player sends the hurry up action
+  - this only happens when the default line presenter is the one presenting the line
+  - other presenters don't really have an obvious "I am done showing, but not done presenting" concept as the line presenter does
+  - adopting this behaviour into other presenters is not difficult, just not something that can be done automatically
+
+### Removed
+
+- SaveStateToPlayerPrefs method
+- LoadStateFromPlayerPrefs method
+- `LinesAvailable` property from line providers, it no longer makes sense in an async world
+- `baseLayer` property on Simple Character as it was no longer used
+- Obsolete uxml elements on `LanguagePopup.cs`
+- All samples, they now live in their own repository
+
+
+## [3.0.0-beta2] 2025-04-09
+
+### Added
+
+- Yarn action handling now supports a wider range of return values.
+- `YarnImporter.GetHashString()` is now public.
+- `UnityLocalisedLineProvider` no longer throws an exception if an asset table is provided but does not contain an asset for a line.
+- `DialogueRunner.CommandDispatcher` is now set up on first access, rather than in `Awake`.
+  - This allows other objects to work with the command dispatcher (for example, registering new methods) in their `Awake` methods, even if their `Awake` methods run before `DialogueRunner`'s.
+- `YarnCommand` and `YarnFunction` commands now allow including `.` characters in their names.
+- Fixed an issue in SerializableDictionary.cs that caused builds to fail.
+- `DialogueRunner.AddCommandHandler` and `DialogueRunner.AddFunction` now validate that the provided names contain no spaces.
+- `DialogueRunner.AddCommandHandler` now supports methods whose last parameter is an array of values.
+  - This allows for commands with a variable list of parameters. For example, consider the following method:
+    ```csharp
+    void LogStrings(int a, string[] remainder) {
+      Debug.Log($"a = {a}, remainder={string.Join(",", remainder)}");
+    }
+    ```
+    This method can be registered as a Yarn command:
+    ```csharp
+    dialogueRunner.AddCommandHandler<int, string[]>("my_command", LogStrings);
+    ```
+    And called from Yarn Spinner:
+    ```
+    // logs "a = 42, remainder=this,is,pretty,great"
+    <<my_command 42 this is pretty great>> 
+    ```
+    > [!NOTE]
+    > Array parameters are required to be the last parameter of the method.
+- Variable storage objects now allow registering a 'change listener' that runs when a variable is changed.  
+  - To add a change listener, call `AddChangeListener` on your variable storage, and provide the name of the variable you want to watch for changes for and a delegate that should run when the variable changes:
+    ```csharp
+    VariableStorageBehaviour storage = // ...
+    
+    var changeListener = storage.AddChangeListener<bool>("$myVariable", (newValue) => {
+      Debug.Log("$myVariable changed to " + newValue);
+    });
+    ```
+    You can remove a change listener by disposing it:
+    ```csharp
+    changeListener.Dispose();
+    ```
+    Change listeners can't be added for smart variables. If you add a change listener for a stored variable (that is, one declared in the Yarn script), the change listener's parameters must match the type of the stored variable.
+
+    > [!NOTE]
+    > If you're implementing your own subclass of `VariableStorageBehaviour`, your `SetValue` methods must call `NotifyVariableChanged` to notify any registered change listeners.
+    >  ```csharp
+    >  public override void SetValue(string variableName, string newValue)
+    >  {
+    >      // ... existing behaviour ...
+    >
+    >      NotifyVariableChanged(variableName, newValue);
+    >  }
+    >  ```
+- Added a sample (CustomSaliency) showing off making a custom saliency selection strategy.
+- Added a sample (InlineEvents) showing off using `ActionMarkupHandler`'s to perform in line events.
+- Added a sample (Replacement Markers) showing off various different approaches to performing marker replacement.
+- The Dialogue System prefab now has support for some common rich text tags
+  - `[i]` will italicise text
+  - `[b]` will embolden text
+  - `[u]` will underline text
+  - `[s]` will strike through text
+- `AsyncOptionsView` now supports configuring its fade duration.
+- `MarkupPalette` and the associated `PaletteMarkerProcessor` now support custom TMP rich text tags beyond what the more basic markers allow.
+- `LineMetadata` now has public API methods for constructing and manually adding elements.
+- `DialogueRunner.SetProject` now sets the `Program` of its internal `Dialogue` object. Previously, this didn't happen until `StartDialogue()`.
+- Added a sample (Advanced Saliency) making use of templated nodes and built in saliency to show off creating storylet vignettes.
+- `IActionMarkupHandler` interface which the `ActionMarkupHandler` monobehaviour now conforms to
+- Action markup handlers now has a `OnLineWillDismiss` method which is called right before the line view fades itself away.
+- `LinePresenterButtonHandler` is a new `ActionMarkupHandler` subclass that manages the continue button on the line view.
+
+### Changed
+
+- Fixed an issue where, on Windows, projects would fail to automatically update when a file that belonged to them was created or edited.
+- Fixed an issue where Unity Localization `rid` values would change on reimport when they didn't have to.
+- Fixed an issue where a `[pause/]` marker at the start of the line would cause all pauses to not work ([@iatenothingbutriceforthreedays](https://github.com/YarnSpinnerTool/YarnSpinner-Unity/pull/291))
+- Inspector-exposed fields on `LineView` are now public.
+- Fixed an issue where a `.meta` file was causing warnings to appear in Unity on import. ([@Colbydude](https://github.com/YarnSpinnerTool/YarnSpinner-Unity/pull/294))
+- Fixed an issue where functions would not be registered with the VM until after the first call to `CommandDispatcher`.
+- `YarnProjectImporter.GenerateStringsTable` is now public.
+- Yarn Projects now allow choosing more specific cultures (for example 'pt-BR' and 'en-AU' rather than simply 'pt' and 'en') as their base language.
+- `DialogueRunner.dialogueCompleteTask` now uses a completion source, rather than polling.
+- `YarnNode` dropdowns no longer show individual node group members in the list.
+- `IActionRegistration` now correctly supports commands without parameters.
+- Renamed `TemporalMarkupProcessor` to `ActionMarkupHandler`.
+- Renamed `AttributeMarkerProcessor` to `ReplacementMarkupHandler`
+- When using Unity Localization, Yarn Projects now populate the string table collection using a post-processor, rather that in the middle of import. This should fix errors that would occasionally cause string tables to not correctly update when a Yarn file changes.
+- Fixed an issue where the System.Threading.Tasks implementation of YarnTask.WaitUntil did not return early when the CancellationToken was cancelled ([@dogboydog](https://github.com/YarnSpinnerTool/YarnSpinner-Unity/pull/304))
+- If a `VoiceOverView` is configured to automatically advance at the end of audio playback, when a line that has no `AudioClip` is delivered, the `VoiceOverView` will now advance the line immediately after logging an error.
+- Renamed `FormatForMarker` to `PaletteForMarker` in `MarkupPalette`.
+- Generated variable storage code now represents string values as signed integers, not unsigned integers. (Unity doesn't correctly serialize enum values over the signed integer maximum.)
+- `YarnNode`-attributed variables can now be configured to allow editing as a text field even when the Yarn Project is not set. This is now the default behaviour for `DialogueReference`.
+- `sourceFilePaths` on `ProjectImportData` renamed to be `sourceFilePatterns` because that is what it actually is.
+- Fixed a crash in project import when externally declared invalid functions had no associated file with the error
+- When an error that `YarnProjectImportEditor` needs to show has no file associated with it the editor no longer draws an empty TextAsset field.
+- Heavily reworked the structure of the project folders.
+- Renamed `AsyncDialogueViewBase` to be `DialoguePresenter`
+  - Renamed `AsyncLineView` to be `LinePresenter`
+  - Renamed `AsyncOptionItem` to be `OptionItem`
+  - Renamed `AsyncOptionsView` to be `OptionsPresenter`
+  - Renamed `VoiceOverView` to be `VoiceOverPresenter`
+- `LanguageAttribute` and `YarnNodeAttribute` are now in the `Yarn.Unity.Attributes` namespace.
+- Facial expressions on the NPCs now have more common names.
+- `MoveEvent.cs` now uses YarnTasks instead of `Awaitable`
+- `ActionMarkupHandler` now conforms to the `IActionMarkupHandler` interface
+- `LinePresenter` now has a public list of `IActionMarkupHandler` for non-monobehaviour based markup handling.
+- `PauseEventProcessor` is now just an `IActionMarkupHandler` and no longer a monobehaviour.
+- Fixed a bug that could cause multiple option items to be selected at once.
+- The awaitable version of `YarnTask.Delay` no longer throws an `OperationCancelledException` when cancelled.
+
+
+### Removed
+
+- `YarnProject.GetHeaders` is now deprecated, in favour of `DialogueRunner.Dialogue.GetHeaders`.
+- Removed `TypewriterHandler`; this behaviour is now intrinsic to the `AsyncLineView`.
+- Removed the `tags` header from the template new yarn file as it is no longer the best way to add metadata headers into a node.
+- Removed Continue Button support from the `LinePresenter`
+
+## [3.0.0-beta1] 2024-11-30
+
+### Added
+
+- Updated voiceover and translation credits for the Intro sample scene.
+- Added shadow line support to BuiltInLineProvider.
+- Added support for generating C# variable storage classes that expose properties for string, number and boolean variables found in a Yarn Project.
+- `YarnCommand` methods may now use `params` array parameters.
+- Asynchronous Default View and Prefab:
+  - `AsyncLineView` is intended as a full replacement for `LineView`.
+  - `AsyncOptionsView` is intended as a full replacement for `OptionsListView`.
+  - `AsyncOptionItem` is intended as a full replacement for `OptionView`.
+  - `LineAdvancer` is a replacement for `DialogueAdvanceInput`.
+  - `Async Dialogue System` prefab is intended as a full replacement for `Dialogue System` prefab.
+- New approach to handling replacement markup:
+  - `AttributeMarkerProcessor` defines the required fields and methods to create replacement markup processors.
+  - `PaletteMarkerProcessor` implements `MarkupPalletes` replacement.
+  - `StyleMarkerProcessor` implements TMP style tag replacement.
+- New approach to handling display-time markup:
+  - `TemporalMarkupHandler` defines the required fields and methods to create markup handlers.
+  - Typewriter is now implemented as a markup handler inside `TypewriterHandler`.
+- `LineCancellationToken` is a combination of two cancellation tokens
+  - this allows for the highly common model of asking a line to hurry up vs skip
+  - New method `HurryUpCurrentLine` on `DialogueRunner` is how to trigger this.
+- Async form of `FadeAlpha` added to `Effects`.
+- Cancellable `Delay` added to `AsyncHelpers`.
+- Cancellable `WaitUntil` that uses a predicate added to `AsyncHelpers`.
+- Localization assets can now be created as external assets, and provided to the Yarn Project importer.
+  - This can be useful if you need to edit the contents of your Localization assets, rather than letting Yarn Spinner create and manage them for you.
+- You can now create a new Dialogue View script by opening Assets -> Create -> Yarn Spinner -> Dialogue View Script. This will create a new C# file that contains an empty template for building your own Dialogue View.
+
+### Changed
+
+- Line Providers are now responsible for performing markup parsing
+  - for the most part this will done by calling `Yarn.Markup.LineParser.ExpandSubstitutions`.
+  - Built in and Unity Loc line providers now handle this for you.
+- `MarkupPallete` now supports more than just colour.
+- Dialogue Runner's "Start Automatically" option now defaults to off, not on.
+- Dialogue Runner's "On Command" event has been renamed to "On Unhandled Command", to better reflect when it's called.
+- `DialogueViewBase` is now deprecated. New Dialogue Views should subclass `AsyncDialogueView`.
+  - The `DialogueViewBase` class now acts as a compatibility layer for the new
+    async dialogue view system, and should not be used in new code.
+- If a Line Provider fails to return a valid line, the Dialogue Runner will send the Dialogue Views an 'Invalid Line' line, rather than skipping over it completely.
+- `InMemoryVariableStorage`'s `debugTextView` property is now a TextMeshPro text field, rather than a legacy Text field.
+
+### Removed
+
+- Remove certain items that were previously marked as obsolete:
+  - Obsolete method `DialogueRunner.ResetDialogue`
+  - Obsolete property `YarnFunctionAttribute.FunctionName`
+  - Obsolete property `YarnCommandAttribute.CommandString`
+  - Obsolete method `YarnProject.GetProgram`
+- `ViewBehaviour` enum inside of `AsyncDialogueViewBase`.
+
+## [2.5.1] 2024-12-17
+
+No changes between this version and v2.5.0; this release fixes an issue related to deployment on OpenUPM.
+
 ## [2.5.0] 2024-12-16
 
 ### Added
@@ -34,6 +289,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     ```
     > [!NOTE]
     > Array parameters are required to be string arrays, and are required to be the last parameter of the method.
+- Language popups now allow choosing a custom language code.
 - Yarn Spinner's XML documentation is now included in the distribution.
 
 ### Changed
@@ -95,6 +351,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Obsolete property `YarnFunctionAttribute.FunctionName`
   - Obsolete property `YarnCommandAttribute.CommandString`
   - Obsolete method `YarnProject.GetProgram`
+- Removed `YarnParameterAttribute` and `YarnStateInjectorAttribute`.
+  - These attributes were formerly used in earlier versions of Yarn Spinner's
+    action system, but are no longer used.
 
 ## [2.4.1] 2024-01-30
 
@@ -255,7 +514,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   
     This is a change from previous versions of Yarn Spinner for Unity, which searched for commands and functions at run-time, which had performance and compatibility implications on certain platforms (notably, consoles).
     
-    This search is done automatically in Unity 2021.2 and later. In earlier versions of Unity, you will need to manually tell Yarn Spinner for Unity to check your code, by opening the Window menu and choosing Yarn Spinner -> Update Yarn Commands.
+    This search is done automatically in Unity 2021.2 and later. In earlier versions of Unity, you will need to manually tell Yarn Spinner for Unity to check your code, by opening the Window menu and choosing Yarn Spinner -> \mands.
 - In Unity 2021.2 and later, you can now see which commands have been registered using `YarnCommand` by opening the Window menu and choosing Yarn Spinner -> Commands...
 - `DialogueReference` objects can now be implicitly converted to `string`s.
 - The `YarnNode` attribute can be attached to a `string` property to turn it into a drop-down menu for choosing nodes in a Yarn Project.

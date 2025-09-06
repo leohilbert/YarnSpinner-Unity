@@ -2,13 +2,16 @@
 Yarn Spinner is licensed to you under the terms found in the file LICENSE.md.
 */
 
-using UnityEngine;
-using UnityEditor;
 using System;
+using UnityEditor;
+using UnityEngine;
+using Yarn.Unity.Legacy;
 
 namespace Yarn.Unity.Editor
 {
+#pragma warning disable CS0612
     [CustomEditor(typeof(DialogueAdvanceInput))]
+#pragma warning restore CS0612
     public class DialogueAdvanceInputEditor : UnityEditor.Editor
     {
         // {0} = the name of the target dialogue view, or
@@ -36,6 +39,7 @@ namespace Yarn.Unity.Editor
 
         public void OnEnable()
         {
+#pragma warning disable CS0612
             dialogueViewProperty = serializedObject.FindProperty(nameof(DialogueAdvanceInput.dialogueView));
             continueActionTypeProperty = serializedObject.FindProperty(nameof(DialogueAdvanceInput.continueActionType));
             continueActionKeyCodeProperty = serializedObject.FindProperty(nameof(DialogueAdvanceInput.continueActionKeyCode));
@@ -47,6 +51,7 @@ namespace Yarn.Unity.Editor
             continueActionProperty = serializedObject.FindProperty(nameof(DialogueAdvanceInput.continueAction));
             enableActionOnStartProperty = serializedObject.FindProperty(nameof(DialogueAdvanceInput.enableActionOnStart));
 #endif
+#pragma warning restore CS0612
         }
 
         public override void OnInspectorGUI()
@@ -54,9 +59,9 @@ namespace Yarn.Unity.Editor
             EditorGUILayout.PropertyField(dialogueViewProperty);
             EditorGUILayout.PropertyField(continueActionTypeProperty);
 
-
             switch (continueActionTypeProperty.enumValueIndex)
             {
+#pragma warning disable CS0612
                 case (int)DialogueAdvanceInput.ContinueActionType.None:
                     DrawInputActionTypeNone();
                     break;
@@ -64,7 +69,7 @@ namespace Yarn.Unity.Editor
                 case (int)DialogueAdvanceInput.ContinueActionType.KeyCode:
                     DrawInputActionTypeKeycode();
                     break;
-                
+
                 case (int)DialogueAdvanceInput.ContinueActionType.VirtualButton:
                     DrawInputActionTypeButton();
                     break;
@@ -76,8 +81,8 @@ namespace Yarn.Unity.Editor
                 case (int)DialogueAdvanceInput.ContinueActionType.InputSystemActionFromAsset:
                     DrawInputActionTypeActionFromAsset();
                     break;
+#pragma warning restore CS0612
             }
-
 
             serializedObject.ApplyModifiedProperties();
         }
@@ -144,7 +149,9 @@ namespace Yarn.Unity.Editor
             {
                 name = DialogueViewPlaceholderName;
             }
+#pragma warning disable CS0618
             EditorGUILayout.HelpBox(string.Format(InputTypeNoneMessage, name, nameof(DialogueViewBase.UserRequestedViewAdvancement)), MessageType.Info);
+#pragma warning restore CS0618
             EditorGUI.indentLevel -= 1;
         }
     }

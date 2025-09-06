@@ -3,10 +3,11 @@ Yarn Spinner is licensed to you under the terms found in the file LICENSE.md.
 */
 
 using UnityEditor;
-using UnityEngine;
-
-using UnityEngine.UIElements;
 using UnityEditor.UIElements;
+using UnityEngine;
+using UnityEngine.UIElements;
+
+#nullable enable
 
 namespace Yarn.Unity.Editor
 {
@@ -14,18 +15,18 @@ namespace Yarn.Unity.Editor
     {
         private readonly TextField sourceFileField;
         private readonly Button deleteButton;
-        public event System.Action onDelete;
+        public event System.Action? OnDelete;
 
         public bool IsModified { get; private set; }
 
-        public string path;
+        public string path = "";
 
         public SourceFileEntryElement(VisualTreeAsset asset, string path, YarnProjectImporter importer)
         {
             asset.CloneTree(this);
             sourceFileField = this.Q<TextField>("sourceFile");
             deleteButton = this.Q<Button>("deleteButton");
-            
+
             IsModified = false;
 
             sourceFileField.RegisterValueChangedCallback((evt) =>
@@ -34,7 +35,7 @@ namespace Yarn.Unity.Editor
                 this.value = evt.newValue;
             });
 
-            deleteButton.clicked += () => onDelete();
+            deleteButton.clicked += () => OnDelete?.Invoke();
 
             SetValueWithoutNotify(path);
         }
@@ -59,8 +60,9 @@ namespace Yarn.Unity.Editor
             this.path = data;
             sourceFileField.SetValueWithoutNotify(data);
         }
-        
-        public void ClearModified() {
+
+        public void ClearModified()
+        {
             this.IsModified = false;
         }
     }

@@ -79,6 +79,10 @@ Samples.meta
 # Intermediate files from Editor/Analysis/Generator~
 Editor/Analysis/ActionsRegistrationGenerator~/bin
 Editor/Analysis/ActionsRegistrationGenerator~/obj
+Editor/Analysis/Analysis.sln*
 
 SourceGenerator/YarnSpinner.Unity.SourceCodeGenerator.deps.json*
+
+*.blend1
+*.afdesign~lock~
 .idea/
