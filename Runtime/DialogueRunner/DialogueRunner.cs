@@ -232,6 +232,12 @@ namespace Yarn.Unity
         public bool IsDialogueRunning => Dialogue.IsActive;
 
         /// <summary>
+        /// Gets a value that indicates if a command is currently being
+        /// executed and awaited.
+        /// </summary>
+        public bool IsRunningCommand { get; private set; }
+
+        /// <summary>
         /// Whether the dialogue runner will immediately start running dialogue
         /// after loading.
         /// </summary>
@@ -608,7 +614,15 @@ namespace Yarn.Unity
             }
             await YarnTask.WhenAll(commandNotification);
 
-            await ActionInvoker.Invoke(command, this, metaToken);
+            IsRunningCommand = true;
+            try
+            {
+                await ActionInvoker.Invoke(command, this, metaToken);
+            }
+            finally
+            {
+                IsRunningCommand = false;
+            }
 
             // finally we need to clean up our tokens for the next piece of content
             currentContentCancellationSource?.Dispose();

@@ -1412,7 +1412,9 @@ namespace Yarn.Unity.Editor
                 // getting the list of hashtags on the line, not including its
                 // line ID (we don't need it in metadata, because it's already
                 // stored as the table entry's key.)
-                var tags = RemoveLineIDFromMetadata(stringInfo.metadata).ToArray();
+                var tags = RemoveLineIDFromMetadata(stringInfo.metadata)
+                    .Concat(SpeakerTag(stringInfo.text))
+                    .ToArray();
 
                 // Next, do we already have metadata for the Unity table entry?
                 var existingSharedMetadata = unityEntry.SharedEntry.Metadata.GetMetadata<UnityLocalization.LineMetadata>();
@@ -1682,6 +1684,15 @@ namespace Yarn.Unity.Editor
         private static IEnumerable<string> RemoveLineIDFromMetadata(string[] metadata)
         {
             return metadata.Where(x => !x.StartsWith("line:"));
+        }
+
+        // The source-language speaker lets game code identify the character
+        // regardless of how the name is translated.
+        private static IEnumerable<string> SpeakerTag(string? text)
+        {
+            var colonIndex = text?.IndexOf(':') ?? -1;
+            if (colonIndex < 0) yield break;
+            yield return $"speaker:{text![..colonIndex].Trim().ToLower()}";
         }
 
 #if USE_UNITY_LOCALIZATION
