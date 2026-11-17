@@ -1,14 +1,16 @@
 {
-    "name": "YarnSpinner.Editor.Tests",
+    "name": "YarnSpinner.Unity.Tests.Editor",
     "rootNamespace": "",
     "references": [
         "YarnSpinner.Unity",
         "YarnSpinner.Unity.Editor",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
+        "YarnSpinner.Unity.Tests.Shared",
         "Unity.Localization",
         "Unity.Localization.Editor",
-        "Unity.Localization.Settings"
+        "Unity.Localization.Settings",
+        "UniTask"
     ],
     "includePlatforms": [
         "Editor"

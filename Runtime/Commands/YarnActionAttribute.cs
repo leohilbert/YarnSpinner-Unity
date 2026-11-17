@@ -7,22 +7,33 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+#nullable enable
+
 namespace Yarn.Unity
 {
-    [AttributeUsage(AttributeTargets.Method, Inherited = false)]
-    public class YarnActionAttribute : Attribute
+    /// <summary>
+    /// Abstract basetype of the action based attributes.
+    /// Used during action collection and analysis
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = false)]
+    public abstract class YarnActionAttribute : Attribute
     {
         /// <summary>
         /// The name of the command or function, as it exists in Yarn.
         /// </summary>
         /// <remarks>
-        /// This value does not have to be the same as the name of the
-        /// method. For example, you could have a method named
-        /// "`WalkToPoint`", and expose it to Yarn as a command named
-        /// "`walk_to_point`".
+        /// This value does not have to be the same as the name of the method.
+        /// For example, you could have a method named "`WalkToPoint`", and
+        /// expose it to Yarn as a command named "`walk_to_point`".
         /// </remarks>
-        public string Name { get; set; }
+        public string? Name { get; set; }
 
-        public YarnActionAttribute(string name = null) => Name = name;
+        /// <summary>
+        /// Initializes a new instance of the <see cref="YarnActionAttribute"/>
+        /// class.
+        /// </summary>
+        /// <param name="name">The name of the action. If not provided or <see
+        /// langword="null"/>, the name of the method is used instead.</param>
+        public YarnActionAttribute(string? name = null) => Name = name;
     }
 }

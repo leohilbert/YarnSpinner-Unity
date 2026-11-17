@@ -1,260 +1,103 @@
+/*
+Yarn Spinner is licensed to you under the terms found in the file LICENSE.md.
+*/
+
+#nullable enable
+
 namespace Yarn.Unity.Editor
 {
     using System;
-    using System.Collections;
+    using System.IO;
     using System.Collections.Generic;
     using System.Linq;
-    using System.Reflection;
     using UnityEditor;
     using UnityEngine;
     using UnityEngine.UIElements;
-    using Yarn.Unity;
 
-    internal class CommandsCollection : IActionRegistration
+    internal class CommandsCollection
     {
-        public List<Actions.CommandRegistration> commandRegistrations = new List<Actions.CommandRegistration>();
+        private List<Yarn.Compiler.Definitions>? yslses;
 
-        public List<(string Name, Delegate Function)> functionRegistrations = new List<(string Name, Delegate Function)>();
-
-        public IEnumerable<CommandsWindow.IListItem> GetListItems()
+        private List<Yarn.Compiler.Definitions> loadDefintions()
         {
-            foreach (var registrationMethod in Actions.ActionRegistrationMethods)
+            var definitions = new List<Yarn.Compiler.Definitions>();
+
+            // getting all text assets in the project
+            // this I think gets those both in assets and packages
+            foreach (var guid in AssetDatabase.FindAssets("t:TextAsset"))
             {
-                registrationMethod.Invoke(this);
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+                // ok is it a ysls.json file?
+                if (!path.EndsWith(".ysls.json"))
+                {
+                    continue;
+                }
+
+                var source = AssetDatabase.LoadAssetAtPath<TextAsset>(path).text;
+                var ysls = new Yarn.Compiler.Definitions(source, Yarn.Compiler.Project.CurrentProjectFileVersion);
+                definitions.Add(ysls);
             }
 
-            yield return new CommandsWindow.HeaderListItem { DisplayName = "Commands" };
-
-            foreach (var command in commandRegistrations)
+            // now to check the project settings folder to see if it has any ysls files also
+            var settingPaths = Path.Combine(Path.GetDirectoryName(Application.dataPath), "ProjectSettings", "Packages", "dev.yarnspinner");
+            try
             {
-                yield return new CommandsWindow.CommandListItem { Command = command };
+                var yslsPaths = Directory.EnumerateFiles(settingPaths, "*.ysls.json");
+                foreach (var yslsPath in yslsPaths)
+                {
+                    if (string.IsNullOrWhiteSpace(yslsPath))
+                    {
+                        continue;
+                    }
+                    var source = File.ReadAllBytes(yslsPath);
+                    var ysls = new Yarn.Compiler.Definitions(source, Yarn.Compiler.Project.CurrentProjectFileVersion);
+                    definitions.Add(ysls);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogException(ex);
             }
 
-            // Add a fake 'stop' command to the list, so that it appears in the
-            // window
-            System.Action fakeStop = () => { };
-            yield return new CommandsWindow.CommandListItem
+            return definitions;
+        }
+
+        public IEnumerable<CommandsWindow.IListItem> GetCommandItems()
+        {
+            if (yslses == null)
             {
-                Command = new Actions.CommandRegistration("stop", fakeStop)
-            };
-        }
+                yslses = loadDefintions();
+            }
 
-        public void AddCommandHandler(string commandName, Delegate handler)
-        {
-            commandRegistrations.Add(new Actions.CommandRegistration(commandName, handler));
+            var allCommands = yslses.SelectMany(y => y.commands);
 
-        }
+            foreach (var command in allCommands)
+            {
+                yield return new CommandsWindow.CommandListItem(command);
+            }
 
-        public void AddCommandHandler(string commandName, MethodInfo methodInfo)
-        {
-            commandRegistrations.Add(new Actions.CommandRegistration(commandName, methodInfo));
+            // Add a fake 'stop' command to the list, so that it appears in the window
+            yield return new CommandsWindow.CommandListItem("stop", "<<stop>>");
         }
+        public IEnumerable<CommandsWindow.IListItem> GetFunctionItems()
+        {
+            if (yslses == null)
+            {
+                yslses = loadDefintions();
+            }
 
-        public void AddCommandHandler(string commandName, Func<Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
+            var allFunctions = yslses.SelectMany(y => y.functions);
+            foreach (var function in allFunctions)
+            {
+                yield return new CommandsWindow.CommandListItem(function);
+            }
 
-        // GYB17 START
-        public void AddCommandHandler<T1>(string commandName, Func<T1, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2>(string commandName, Func<T1, T2, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3>(string commandName, Func<T1, T2, T3, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Func<T1, T2, T3, T4, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Func<T1, T2, T3, T4, T5, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Func<T1, T2, T3, T4, T5, T6, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, Coroutine> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        // GYB17 END
-
-        public void AddCommandHandler(string commandName, Func<IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-
-        // GYB18 START
-        public void AddCommandHandler<T1>(string commandName, Func<T1, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2>(string commandName, Func<T1, T2, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3>(string commandName, Func<T1, T2, T3, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Func<T1, T2, T3, T4, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Func<T1, T2, T3, T4, T5, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Func<T1, T2, T3, T4, T5, T6, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, IEnumerator> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        // GYB18 END
-
-        public void AddCommandHandler(string commandName, Action handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-
-        // GYB19 START
-        public void AddCommandHandler<T1>(string commandName, Action<T1> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2>(string commandName, Action<T1, T2> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3>(string commandName, Action<T1, T2, T3> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Action<T1, T2, T3, T4> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Action<T1, T2, T3, T4, T5> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Action<T1, T2, T3, T4, T5, T6> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8, T9> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> handler)
-        {
-            AddCommandHandler(commandName, (Delegate)handler);
-        }
-        // GYB19 END
-
-        public void AddFunction(string name, Delegate implementation)
-        {
-            functionRegistrations.Add((name, implementation));
-        }
-
-        public void AddFunction<TResult>(string name, Func<TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-
-        // GYB20 START
-        public void AddFunction<T1, TResult>(string name, Func<T1, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, TResult>(string name, Func<T1, T2, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, T3, TResult>(string name, Func<T1, T2, T3, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, T3, T4, TResult>(string name, Func<T1, T2, T3, T4, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, T3, T4, T5, TResult>(string name, Func<T1, T2, T3, T4, T5, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, T3, T4, T5, T6, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, T3, T4, T5, T6, T7, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult> implementation)
-        {
-            AddFunction(name, (Delegate)implementation);
-        }
-        // GYB2- END
-
-        public void RemoveCommandHandler(string commandName)
-        {
-            // No-op
-        }
-
-        public void RemoveFunction(string name)
-        {
-            // No-op
+            // how do I want to handle the built in functions?
+            // most are just gonna be noise (so like Number.Add) but ones like visited are good to know right?
         }
     }
 
@@ -265,25 +108,52 @@ namespace Yarn.Unity.Editor
         public class HeaderListItem : IListItem
         {
             public string DisplayName { get; set; }
+
+            public HeaderListItem(string displayName)
+            {
+                DisplayName = displayName;
+            }
         }
 
         public class CommandListItem : IListItem
         {
-            internal Actions.CommandRegistration Command;
-            public string DisplayName => Command.Name;
+            internal CommandListItem(Yarn.Shared.Action command)
+            {
+                DisplayName = command.Name;
+                UsageString = command.Usage;
+            }
+
+            internal CommandListItem(Compiler.Declaration function)
+            {
+                DisplayName = function.Name;
+                if (function.Type is not FunctionType fType)
+                {
+                    throw new System.ArgumentException($"attempted to create a function declaration when we don't have a function, we have a {function.Type}");
+                }
+                UsageString = $"{function.Name}({string.Join(',', fType.Parameters.Select(p => p.Name))})";
+            }
+
+            internal CommandListItem(string display, string usage)
+            {
+                DisplayName = display;
+                UsageString = usage;
+            }
+
+            public string DisplayName { get; private set; }
+            public string UsageString;
         }
 
-        [SerializeField] private VisualTreeAsset uxml;
-        [SerializeField] private VisualTreeAsset listItemUXML;
-        [SerializeField] private StyleSheet stylesheet;
+        [SerializeField] private VisualTreeAsset? uxml;
+        [SerializeField] private VisualTreeAsset? listItemUXML;
+        [SerializeField] private StyleSheet? stylesheet;
 
-        private List<IListItem> listItems;
-        private List<IListItem> filteredListItems;
+        private List<IListItem> listItems = new();
+        private List<IListItem> filteredListItems = new();
 
-        [MenuItem("Window/Yarn Spinner/Commands...")]
+        [MenuItem("Window/Yarn Spinner/Commands and Functions...")]
         static void Summon()
         {
-            var window = GetWindow<CommandsWindow>("Yarn Commands");
+            var window = GetWindow<CommandsWindow>("Yarn Actions");
             window.Show();
         }
 
@@ -306,13 +176,24 @@ namespace Yarn.Unity.Editor
 
             var commandsCollection = new CommandsCollection();
 
-            listItems = new List<IListItem>(commandsCollection.GetListItems().OrderBy(item => item.DisplayName));
+            listItems = new List<IListItem>
+            {
+                new CommandsWindow.HeaderListItem("Commands")
+            };
+            listItems.AddRange(commandsCollection.GetCommandItems().OrderBy(item => item.DisplayName));
+            listItems.Add(new CommandsWindow.HeaderListItem("Functions"));
+            listItems.AddRange(commandsCollection.GetFunctionItems().OrderBy(item => item.DisplayName));
 
             UpdateFilter(listView, searchField.value);
 
             // Set ListView.makeItem to initialize each entry in the list.
             listView.makeItem = () =>
             {
+                if (listItemUXML == null)
+                {
+                    throw new InvalidOperationException($"Can't create new list item: {nameof(listItemUXML)} is null");
+                }
+
                 var result = listItemUXML.CloneTree();
                 result.styleSheets.Add(stylesheet);
                 result.AddToClassList("commandListItem");
@@ -334,7 +215,7 @@ namespace Yarn.Unity.Editor
                 else if (listItem is CommandListItem command)
                 {
                     element.AddToClassList("command");
-                    element.Q<Label>("Subtitle").text = "<<" + command.Command.UsageString + ">>";
+                    element.Q<Label>("Subtitle").text = command.UsageString;
                 }
             };
         }
@@ -355,7 +236,7 @@ namespace Yarn.Unity.Editor
                     }
                     if (item is CommandListItem command)
                     {
-                        return command.Command.Name.IndexOf(value, StringComparison.InvariantCultureIgnoreCase) != -1;
+                        return command.DisplayName.IndexOf(value, StringComparison.InvariantCultureIgnoreCase) != -1;
                     }
                     return true;
                 }).ToList();

@@ -3,42 +3,51 @@ Yarn Spinner is licensed to you under the terms found in the file LICENSE.md.
 */
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 namespace Yarn.Unity
 {
-    internal class DefaultActions : MonoBehaviour
+    static class DefaultActions
     {
-#if UNITY_EDITOR
-        [UnityEditor.InitializeOnLoadMethod]
-#endif
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-        public static void AddRegisterFunction() {
-            // When the domain is reloaded, scripts are recompiled, or the game
-            // starts, add RegisterActions as a method that populates a
-            // DialogueRunner or Library with commands and functions.
-            Actions.AddRegistrationMethod(RegisterActions);
-        }
-
-        public static void RegisterActions(IActionRegistration target)
-        {
-            // Register the built-in methods and commands from Yarn Spinner for Unity.
-            target.AddCommandHandler<float>("wait", Wait);
-        }
-
         #region Commands
         /// <summary>
         /// Yarn Spinner defines two built-in commands: "wait", and "stop".
         /// Stop is defined inside the Virtual Machine (the compiler traps it
         /// and makes it a special case.) Wait is defined here in Unity.
         /// </summary>
-        /// <param name="duration">How long to wait.</param>
-        [YarnCommand("wait")]
-        public static IEnumerator Wait(float duration)
+
+        [RuntimeInitializeOnLoadMethod]
+        static void RegisterDefaultActions()
         {
-            yield return new WaitForSeconds(duration);
+            ActionInvoker.RegisterCommandHandler(CanHandleCommand, InvokeCommand);
+        }
+
+        private static YarnTask InvokeCommand(Command command, LineCancellationToken token)
+        {
+            var parts = new List<string>(DialogueRunner.SplitCommandText(command.Text));
+            var commandName = parts[0];
+
+            if (commandName != "wait") { throw new ArgumentException($"Can't handle command {commandName}"); }
+
+            if (parts.Count != 2) { throw new ArgumentNullException("Can't wait: not enough parameters"); }
+
+            if (float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var durationSeconds) == false || durationSeconds < 0)
+            {
+                throw new ArgumentException($"Can't wait: invalid parameter '{parts[1]}'");
+            }
+
+            var delayDuration = TimeSpan.FromSeconds(durationSeconds);
+            return YarnTask.Delay(delayDuration, token.HurryUpToken);
+        }
+
+        private static bool CanHandleCommand(string commandName)
+        {
+            return commandName switch
+            {
+                "wait" => true,
+                _ => false
+            };
         }
         #endregion
     }

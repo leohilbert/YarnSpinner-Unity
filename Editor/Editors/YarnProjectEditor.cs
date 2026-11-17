@@ -3,9 +3,11 @@ Yarn Spinner is licensed to you under the terms found in the file LICENSE.md.
 */
 
 using UnityEditor;
+using UnityEditor.AssetImporters;
 using UnityEditor.UIElements;
 using UnityEngine.UIElements;
-using UnityEditor.AssetImporters;
+
+#nullable enable
 
 namespace Yarn.Unity.Editor
 {
@@ -16,11 +18,20 @@ namespace Yarn.Unity.Editor
         {
             var assetPath = AssetDatabase.GetAssetPath(target);
             var importer = AssetImporter.GetAtPath(assetPath) as YarnProjectImporter;
-            var importData = importer.ImportData;
+
+            ProjectImportData? importData = null;
+            if (importer == null)
+            {
+                // No importer found for this asset. Possibly it's not an asset on disk?
+                return new Label("Yarn Project has no importer");
+            }
 
             var ui = new VisualElement();
 
-            if (importData == null) {
+            importData = importer.ImportData;
+
+            if (importData == null)
+            {
                 return new Label("Project failed to import, or needs upgrading.");
             }
 
@@ -29,11 +40,12 @@ namespace Yarn.Unity.Editor
             var importDataSO = new SerializedObject(importData);
 
             var yarnScriptsProperty = importDataSO.FindProperty(nameof(ProjectImportData.yarnFiles));
-            var yarnScriptsField = new PropertyField(yarnScriptsProperty);
+            var yarnScriptsField = new PropertyField(yarnScriptsProperty, "Yarn Scripts");
             yarnScriptsField.Bind(importDataSO);
             ui.Add(yarnScriptsField);
             foldout = yarnScriptsField.Q<Foldout>();
-            if (foldout != null) {
+            if (foldout != null)
+            {
                 foldout.value = true;
             }
 
@@ -41,7 +53,8 @@ namespace Yarn.Unity.Editor
             var variablesField = new PropertyField(variablesProperty, "Variables");
             variablesField.Bind(importDataSO);
             foldout = variablesField.Q<Foldout>();
-            if (foldout != null) {
+            if (foldout != null)
+            {
                 foldout.value = true;
             }
 

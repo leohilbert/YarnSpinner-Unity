@@ -5,458 +5,1021 @@ Yarn Spinner is licensed to you under the terms found in the file LICENSE.md.
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Reflection;
 using UnityEngine;
+using Yarn.Shared;
 
+#if UNITY_6000_6_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#else
+using Yarn.Unity.Shim;
+#endif
+
+#nullable enable
 
 namespace Yarn.Unity
 {
-    using Converter = System.Func<string, object>;
-
-    public interface ICommand
+    /// <summary>
+    /// Provides a series of extensions and helper methods reflection types and their <see cref="Yarn.Shared.Action" /> (and related) forms.
+    /// </summary>
+    /// <remarks>
+    /// These are mostly used when performing any runtime analysis and invocation of actions as opposed to the compiletime analysis and invocation.
+    /// </remarks>
+    public static class ActionExtensions
     {
-        string Name { get; }
-    }
-
-    internal static class DiagnosticUtility
-    {
-        public static string EnglishPluraliseNounCount(int count, string name, bool prefixCount = false)
+        /// <summary>
+        /// Converts a runtime Type into a Yarn NamedType
+        /// </summary>
+        /// <param name="type">The type to be converted</param>
+        /// <returns>The Yarn NamedType equivalent</returns>
+        public static NamedType ToNamedType(this Type type)
         {
-            string result;
-            if (count == 1)
+            bool isUnityComponent = typeof(Component).IsAssignableFrom(type);
+            var nt = new NamedType($"global::{type.FullName}", type.Name, type.FullName, YarnSpecialType.Other, isUnityComponent);
+            return nt;
+        }
+        /// <summary>
+        /// Given a reflection method info returns the string global string form of the method name
+        /// <param name="methodInfo">The methodinfo to convert</param>
+        /// </summary>
+        /// <returns>A string equivalent of the method</returns>
+        public static string GlobalMethodName(this MethodInfo methodInfo)
+        {
+            return $"global::{methodInfo.FullMethodName()}";
+        }
+        /// <summary>
+        /// Given a reflection method info returns a full form string form of the method name
+        /// </summary>
+        /// <param name="method">The methodinfo to convert</param>
+        /// <returns>A string equivalent of the method</returns>
+        public static string FullMethodName(this MethodInfo method)
+        {
+            return $"{method.DeclaringType.FullName}.{method.Name}";
+        }
+        /// <summary>
+        /// Given a Type converts it into the Yarn.Shared.YarnSpecialType equivalent
+        /// </summary>
+        /// <param name="type">The type to convert</param>
+        /// <returns>the converted YarnSpecialType</returns>
+        public static YarnSpecialType ToSpecialType(this Type type)
+        {
+            Dictionary<Type, YarnSpecialType> basicReturns = new()
             {
-                result = name;
-            }
-            else
-            {
-                result = name + "s";
-            }
-            if (prefixCount)
-            {
-                return count.ToString() + " " + result;
-            }
-            else
+                {typeof(string), YarnSpecialType.String},
+                {typeof(bool), YarnSpecialType.Boolean},
+                {typeof(int), YarnSpecialType.Int32},
+                {typeof(uint), YarnSpecialType.UInt32},
+                {typeof(short), YarnSpecialType.Int16},
+                {typeof(ushort), YarnSpecialType.UInt16},
+                {typeof(byte), YarnSpecialType.Byte},
+                {typeof(sbyte), YarnSpecialType.SByte},
+                {typeof(long), YarnSpecialType.Int64},
+                {typeof(ulong), YarnSpecialType.UInt64},
+                {typeof(float), YarnSpecialType.Single},
+                {typeof(double), YarnSpecialType.Double},
+                {typeof(decimal), YarnSpecialType.Decimal},
+            };
+
+            if (basicReturns.TryGetValue(type, out var result))
             {
                 return result;
             }
-        }
-
-        public static string EnglishPluraliseWasVerb(int count)
-        {
-            if (count == 1)
-            {
-                return "was";
-            }
-            else
-            {
-                return "were";
-            }
+            return YarnSpecialType.Other;
         }
     }
 
-
-
-    public class Actions : ICommandDispatcher
+    /// <summary>
+    /// The "default" action registration system used 
+    /// </summary>
+    public partial class Actions : IActionRegistration
     {
-        internal class CommandRegistration : ICommand
+        [NoAutoStaticsCleanup]
+        private static string[] asyncReturns =
         {
-            public CommandRegistration(string name, Delegate @delegate)
+            "Yarn.Unity.YarnTask",
+            "System.Threading.Tasks.Task",
+            "Cysharp.Threading.Tasks.UniTask",
+            "UnityEngine.Awaitable",
+        };
+        [NoAutoStaticsCleanup]
+        private static Type[] asyncOpenReturns =
+        {
+            typeof(Yarn.Unity.YarnTask<>),
+            typeof(System.Threading.Tasks.Task<>),
+#if USE_UNITASK
+            typeof(Cysharp.Threading.Tasks.UniTask<>),
+#endif
+#if UNITY_2023_1_OR_NEWER
+            typeof(UnityEngine.Awaitable<>),
+#endif
+        };
+        [NoAutoStaticsCleanup]
+        private static Dictionary<Type, ReturnType> basicReturns = new()
+        {
+            {typeof(string), ReturnType.String},
+            {typeof(bool), ReturnType.Boolean},
+
+            {typeof(int), ReturnType.Number},
+            {typeof(uint), ReturnType.Number},
+            {typeof(short), ReturnType.Number},
+            {typeof(ushort), ReturnType.Number},
+            {typeof(byte), ReturnType.Number},
+            {typeof(sbyte), ReturnType.Number},
+            {typeof(long), ReturnType.Number},
+            {typeof(ulong), ReturnType.Number},
+            {typeof(float), ReturnType.Number},
+            {typeof(double), ReturnType.Number},
+            {typeof(decimal), ReturnType.Number},
+        };
+
+        /// <summary>
+        /// Given a methodinfo collected via reflection converts into a <see cref="Yarn.Shared.Action"/>
+        /// </summary>
+        /// <param name="method">The method itseld</param>
+        /// <param name="yarnName">the yarn name of the method</param>
+        /// <param name="actionType">The type of the action, so is it a command or a function?</param>
+        /// <returns>The action. If something went wrong will be an <see cref="Yarn.Shared.InvalidAction"/> instead.</returns>
+        public static Yarn.Shared.Action ActionFromMethodInfo(MethodInfo method, string yarnName, ActionType actionType)
+        {
+            List<Parameter> parameters = new();
+            foreach (var paramInfo in method.GetParameters())
             {
-                Name = name;
-                Method = @delegate.Method;
-                Target = @delegate.Target;
-                Converters = CreateConverters(Method);
-                DynamicallyFindsTarget = false;
+                var p = ParameterFromInfo(paramInfo);
+                parameters.Add(p);
             }
 
-            public CommandRegistration(string name, MethodInfo method)
+            bool isInstance = true;
+
+            // super crude hack to make it "detect" if it is a local function or lambda
+            // this isn't realistically rigorous enough but will work for now I think
+            if (method.Name.Contains('<') &&  method.Name.Contains('>'))
             {
-                if (method.IsStatic)
+                isInstance = false;
+            }
+            if (method.IsStatic)
+            {
+                isInstance = false;
+            }
+            
+            foreach (var art in asyncReturns)
+            {
+                if (method.ReturnType.FullName == art)
                 {
-                    DynamicallyFindsTarget = false;
+                    return new Shared.Action(yarnName, method.GlobalMethodName(), method.Name, actionType, isInstance, ReturnType.AsyncVoid, method.DeclaringType.ToNamedType(), parameters.ToArray());
                 }
-                else if (typeof(Component).IsAssignableFrom(method.DeclaringType))
+            }
+            
+            if (method.ReturnType == typeof(void))
+            {
+                return new Shared.Action(yarnName, method.GlobalMethodName(), method.Name, actionType, isInstance, ReturnType.Void, method.DeclaringType.ToNamedType(), parameters.ToArray());
+            }
+            else if(basicReturns.ContainsKey(method.ReturnType))
+            {
+                return new Shared.Action(yarnName, method.GlobalMethodName(), method.Name, actionType, isInstance, basicReturns[method.ReturnType], method.DeclaringType.ToNamedType(), parameters.ToArray());
+            }
+            else if (method.ReturnType.FullName == "UnityEngine.Coroutine")
+            {
+                return new Shared.Action(yarnName, method.GlobalMethodName(), method.Name, actionType, isInstance, ReturnType.CoroutineVoid, method.DeclaringType.ToNamedType(), parameters.ToArray());
+            }
+            else if (method.ReturnType == typeof(IEnumerator))
+            {
+                return new Shared.Action(yarnName, method.GlobalMethodName(), method.Name, actionType, isInstance, ReturnType.IEnumeratorVoid, method.DeclaringType.ToNamedType(), parameters.ToArray());
+            }
+            else
+            {
+                // ok so at this stage we are either an invalid action
+                // or we are a generic task
+                // which requires a bit more work
+                if (method.ReturnType.IsGenericType)
                 {
-                    // This method is an instance method on a Component (or one
-                    // of its subclasses). We'll dynamically find a target to
-                    // invoke the method on at runtime.
-                    DynamicallyFindsTarget = true;
+                    var wrappedTypes = method.ReturnType.GetGenericArguments();
+                    if (wrappedTypes.Length == 1)
+                    {
+                        var baseType = method.ReturnType.GetGenericTypeDefinition();
+                        var internalType = wrappedTypes[0];
+                        foreach (var art in asyncOpenReturns)
+                        {
+                            if (baseType == art)
+                            {
+                                if (basicReturns.ContainsKey(internalType))
+                                {
+                                    switch (basicReturns[internalType])
+                                    {
+                                        case ReturnType.String:
+                                            return new Shared.Action(yarnName, method.GlobalMethodName(), method.Name, actionType, isInstance, ReturnType.AsyncString, method.DeclaringType.ToNamedType(), parameters.ToArray());
+                                        case ReturnType.Number:
+                                            return new Shared.Action(yarnName, method.GlobalMethodName(), method.Name, actionType, isInstance, ReturnType.AsyncNumber, method.DeclaringType.ToNamedType(), parameters.ToArray());
+                                        case ReturnType.Boolean:
+                                            return new Shared.Action(yarnName, method.GlobalMethodName(), method.Name, actionType, isInstance, ReturnType.Boolean, method.DeclaringType.ToNamedType(), parameters.ToArray());
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                else
+            }
+
+            return new InvalidAction(method.Name, actionType);
+        }
+
+        private static Parameter ParameterFromInfo(ParameterInfo parameterInfo)
+        {
+            // parameters are allowed to be
+                // various numeric types
+                // strings
+                // bools
+                // tokens
+                    // as long as they are the last parameter
+                // enums
+                    // as long as they are a Yarn Enum
+                // game objects
+                // component derived classes
+            // parameters can
+                // be an array of the above types
+                    // as long as it is the last parameter
+                    // and not a token
+                // have default values
+            
+            // is it an array?
+            var pType = parameterInfo.ParameterType;
+            if (parameterInfo.ParameterType.IsArray)
+            {
+                pType = parameterInfo.ParameterType.GetElementType();
+            }
+
+            // is it attributed as an enum?
+            string? enumAttributeValue = parameterInfo.GetCustomAttribute<Attributes.YarnEnumParameterAttribute>()?.Name;
+
+            // is it attributed as a node?
+            var nodeAttributeType = typeof(Attributes.YarnNodeParameterAttribute);
+            var isNodeAttributed = parameterInfo.GetCustomAttribute(nodeAttributeType) != null;
+
+            // and finally does it have a default value?
+            string? defaultDisplay = parameterInfo.DefaultValue?.ToString();
+
+            Type[] basics = new Type[]
+            {
+                typeof(bool),
+                typeof(sbyte),
+                typeof(byte),
+                typeof(short),
+                typeof(ushort),
+                typeof(int),
+                typeof(uint),
+                typeof(long),
+                typeof(ulong),
+                typeof(decimal),
+                typeof(float),
+                typeof(double),
+                typeof(string),
+            };
+            for (int i = 0; i < basics.Length; i++)
+            {
+                var basic = basics[i];
+                if (basic != pType)
                 {
-                    // The instance method's declaring type is not a Component,
-                    // which means we won't be able to look up a target.
-                    throw new ArgumentException($"Cannot register method {GetFullMethodName(method)} as a command: instance methods must declared on {nameof(Component)} classes.");
+                    continue;
+                }
+
+                return new BasicParameter(parameterInfo.Name, basics[i].ToSpecialType(), parameterInfo.ParameterType.IsArray, parameterInfo.IsOut, parameterInfo.HasDefaultValue, defaultDisplay, isNodeAttributed, enumAttributeValue);
+            }
+
+            if (pType == typeof(System.Threading.CancellationToken) || pType == typeof(LineCancellationToken))
+            {
+                return new TokenParameter(parameterInfo.Name, pType == typeof(LineCancellationToken), parameterInfo.ParameterType.IsArray, parameterInfo.IsOut, parameterInfo.HasDefaultValue, defaultDisplay, isNodeAttributed, enumAttributeValue);
+            }
+            else if (typeof(GameObject).IsAssignableFrom(pType))
+            {
+                return new GameObjectParameter(parameterInfo.Name, pType.ToNamedType(), parameterInfo.ParameterType.IsArray, parameterInfo.IsOut, parameterInfo.HasDefaultValue, defaultDisplay, isNodeAttributed, enumAttributeValue);
+            }
+            else if (typeof(Component).IsAssignableFrom(pType))
+            {
+                return new ComponentParameter(parameterInfo.Name, pType.ToNamedType(), parameterInfo.ParameterType.IsArray, parameterInfo.IsOut, parameterInfo.HasDefaultValue, defaultDisplay, isNodeAttributed, enumAttributeValue);
+            }
+            else if (pType.IsEnum && pType.IsDefined(typeof(Attributes.YarnGeneratedEnumAttribute), false))
+            {
+                // so now we know we are an enum and flagged as a yarn generated enum
+                // which means we can now trust the source gen to have written the requisite code to let us interface with this
+                // but I am unsure if I can do dynamic calls like this...
+                var attribute = pType.GetCustomAttribute<Attributes.YarnGeneratedEnumAttribute>();
+                if (attribute == null)
+                {
+                    return new UnknownParameter(parameterInfo.Name, pType.ToNamedType(), parameterInfo.ParameterType.IsArray, parameterInfo.IsOut, parameterInfo.HasDefaultValue, defaultDisplay, isNodeAttributed, null);
+                }
+                return new EnumParameter(parameterInfo.Name, pType.Name, attribute.backing, parameterInfo.ParameterType.IsArray, parameterInfo.IsOut, parameterInfo.HasDefaultValue, defaultDisplay, isNodeAttributed, enumAttributeValue);
+            }
+
+            return new UnknownParameter(parameterInfo.Name, pType.ToNamedType(), parameterInfo.ParameterType.IsArray, parameterInfo.IsOut, parameterInfo.HasDefaultValue, defaultDisplay, isNodeAttributed, enumAttributeValue);
+        }
+
+        /// <summary>
+        /// Bundles up the action and it's delegate (however this was collected) into one type for convenience.
+        /// Yarn Spinner itself thinks in terms of the <see cref="Yarn.Shared.Action"/> but when it comes time to actually invoke the action this type holds the necessary info to run the delegate.
+        /// </summary>
+        internal class RuntimeAction
+        {
+            internal RuntimeAction(string name, Delegate @delegate, ActionType actionType)
+            {
+                // we make an action from the method info
+                // and it's possible we can make a valid action but one we can't invoke
+                // so we validate it and if it fails validation we then wipe it
+                var action = Actions.ActionFromMethodInfo(@delegate.Method, name, actionType);
+                if (action is not InvalidAction)
+                {
+                    if (!Shared.Action.TryValidateAction(action, Array.Empty<Shared.YarnConverter>(), null, false))
+                    {
+                        Debug.LogError("failed command validation");
+                        action = new InvalidAction(action.Name, actionType);
+                    }
+                }
+
+                Name = name;
+                Method = @delegate.Method;
+                Action = action;
+                // delegates have a target which is needed for all non-instance non-static commands
+                // aka locals and lambdas which are implictly capturing this
+                // so we scoop up the target and keep it around for later when it comes time to invoke the method
+                Target = @delegate.Target;
+            }
+
+            internal RuntimeAction(string name, MethodInfo method, ActionType actionType)
+            {
+                // we make an action from the method info
+                // and it's possible we can make a valid action but one we can't invoke
+                // so we validate it and if it fails validation we then wipe it
+                var action = Actions.ActionFromMethodInfo(method, name, actionType);
+                if (action is not InvalidAction)
+                {
+                    if (!Shared.Action.TryValidateAction(action, Array.Empty<Shared.YarnConverter>(), null, false))
+                    {
+                        action = new InvalidAction(action.Name, actionType);
+                    }
                 }
 
                 Name = name;
                 Method = method;
-                Target = null;
-
-                Converters = CreateConverters(method);
+                Action = action;
             }
 
-            public string Name { get; set; }
-            public MethodInfo Method { get; set; }
-            private object Target { get; set; }
+            internal string Name { get; set; }
+            internal MethodInfo Method { get; set; }
+            private Shared.Action Action;
+            private object? Target { get; set; }
 
-            public Type DeclaringType => Method.DeclaringType;
-            public Type ReturnType => Method.ReturnType;
-            public bool IsStatic => Method.IsStatic;
-
-            public readonly Converter[] Converters;
-
-            /// <summary>
-            /// Gets a value indicating that this command finds a target to
-            /// invoke its method on by name, each time it is invoked.
-            /// </summary>
-            private bool DynamicallyFindsTarget { get; }
-
-            public CommandType Type
+            private static bool TryConvertParameter(Parameter parameter, IConvertible input, Type type, out object? value)
             {
-                get
+                // we know how to handle game objects, components, and basic parameters
+                // for everything else we ask the collection of converters that the invoker has lying around and hope one of those can handle it
+                if (parameter is GameObjectParameter)
                 {
-                    Type returnType = ReturnType;
+                    value = GameObject.Find(input.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    return value != null;
+                }
+                else if (parameter is ComponentParameter cp)
+                {
+                    var go = GameObject.Find(input.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    if (go == null)
+                    {
+                        value = null;
+                        return false;
+                    }
+                    value = go.GetComponentInChildren(type);
+                    return value != null;
+                }
+                else if (parameter is BasicParameter bp)
+                {
+                    switch (bp.SpecialType)
+                    {
+                        case YarnSpecialType.String:
+                            value = input.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            return true;
 
-                    if (typeof(void).IsAssignableFrom(returnType))
-                    {
-                        return CommandType.IsVoid;
+                        case YarnSpecialType.Boolean:
+                            value = input.ToBoolean(System.Globalization.CultureInfo.InvariantCulture);
+                            return true;
+
+                        case YarnSpecialType.Byte:
+                            {
+                                value = input.ToByte(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.Decimal:
+                            {
+                                value = input.ToDecimal(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.Double:
+                            {
+                                value = input.ToDouble(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }    
+                        case YarnSpecialType.Int16:
+                            {
+                                value = input.ToInt16(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.Int32:
+                            {
+                                value = input.ToInt32(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.Int64:
+                            {
+                                value = input.ToInt64(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.SByte:
+                            {
+                                value = input.ToSByte(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.Single:
+                            {
+                                value = input.ToSingle(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.UInt16:
+                            {
+                                value = input.ToUInt16(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.UInt32:
+                            {
+                                value = input.ToUInt32(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        case YarnSpecialType.UInt64:
+                            {
+                                value = input.ToUInt64(System.Globalization.CultureInfo.InvariantCulture);
+                                return true;
+                            }
+                        
+                        default:
+                            value = null;
+                            return false;
                     }
-                    if (typeof(IEnumerator).IsAssignableFrom(returnType))
-                    {
-                        return CommandType.IsCoroutine;
-                    }
-                    if (typeof(Coroutine).IsAssignableFrom(returnType))
-                    {
-                        return CommandType.ReturnsCoroutine;
-                    }
-                    return CommandType.Invalid;
+                }
+                // if any of the runtime converters say they can handle it then we will let them take the wheel
+                else if (ActionInvoker.TryRuntimeConvert(input, type, out value))
+                {
+                    return true;
+                }
+                else
+                {
+                    value = null;
+                    return false;
                 }
             }
 
-            public enum CommandType
+            private static bool TryConvertParameter(Parameter parameter, string input, Type type, out object? value)
             {
-                /// <summary>
-                /// The method returns <see cref="void"/>.
-                /// </summary>
-                IsVoid,
-                /// <summary>
-                /// The method returns a <see cref="Coroutine"/> object.
-                /// </summary>
-                /// <remarks>
-                ReturnsCoroutine,
-                /// <summary>
-                /// The method returns <see cref="IEnumerator"/> (that is, it is
-                /// a coroutine).
-                /// </summary>
-                /// <remarks>
-                /// Code that invokes this command should use <see
-                /// cref="MonoBehaviour.StartCoroutine(IEnumerator)"/> to begin
-                /// the coroutine.
-                /// </remarks>
-                IsCoroutine,
-                /// <summary>
-                /// The method is not a valid command (that is, it does not
-                /// return <see cref="void"/>, <see cref="Coroutine"/>, or <see
-                /// cref="IEnumerator"/>.)
-                /// </summary>
-                Invalid,
+                // we know how to handle game objects, components, and basic parameters
+                // for everything else we ask the collection of converters that the invoker has lying around and hope one of those can handle it
+                if (parameter is GameObjectParameter)
+                {
+                    value = GameObject.Find(input);
+                    return value != null;
+                }
+                else if (parameter is ComponentParameter cp)
+                {
+                    var go = GameObject.Find(input);
+                    if (go == null)
+                    {
+                        value = null;
+                        return false;
+                    }
+                    value = go.GetComponentInChildren(type);
+                    return value != null;
+                }
+                else if (parameter is BasicParameter bp)
+                {
+                    switch (bp.SpecialType)
+                    {
+                        case YarnSpecialType.String:
+                            value = input;
+                            return true;
+
+                        case YarnSpecialType.Boolean:
+                            value = input == parameter.Name || input.ToLowerInvariant() == "true"; // should this be a case insenstive check?
+                            return true;
+
+                        case YarnSpecialType.Byte:
+                            {
+                                var result = byte.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.Decimal:
+                            {
+                                var result = decimal.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.Double:
+                            {
+                                var result = double.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }    
+                        case YarnSpecialType.Int16:
+                            {
+                                var result = short.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.Int32:
+                            {
+                                var result = int.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.Int64:
+                            {
+                                var result = long.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.SByte:
+                            {
+                                var result = sbyte.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.Single:
+                            {
+                                var result = float.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.UInt16:
+                            {
+                                var result = ushort.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.UInt32:
+                            {
+                                var result = uint.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        case YarnSpecialType.UInt64:
+                            {
+                                var result = ulong.TryParse(input, out var converted);
+                                value = converted;
+                                return result;
+                            }
+                        
+                        default:
+                            value = null;
+                            return false;
+                    }
+                }
+                // if any of the runtime converters say they can handle it then we will let them take the wheel
+                else if (ActionInvoker.TryRuntimeConvert(input, type, out value))
+                {
+                    return true;
+                }
+                else
+                {
+                    value = null;
+                    return false;
+                }
             }
 
-            /// <summary>
-            /// Attempt to parse the arguments with cached converters.
-            /// </summary>
-            public bool TryParseArgs(string[] args, out object[] result, out string message)
+            internal IDispatchResult Invoke(IConvertible[] parameters, System.Threading.CancellationToken token)
             {
-                var parameters = Method.GetParameters();
-
-                var (min, max) = ParameterCount;
-
-                bool lastParameterIsArray = parameters.Length > 0 && parameters[parameters.Length - 1].ParameterType.IsArray;
-
-                int argumentCount = args.Length;
-                if (argumentCount < min || (argumentCount > max && !lastParameterIsArray))
+                if (Action is InvalidAction)
                 {
-                    // Wrong number of arguments.
-                    string requirementDescription;
-                    if (min == 0)
+                    return new ActionDispatchFailed(StatusType.ActionUnknown);
+                }
+
+                if (Action.Type != ActionType.Function)
+                {
+                    return new ActionDispatchFailed(StatusType.ActionUnknown);
+                }
+
+                var (min, max) = Action.NumberOfParameters;
+                if (parameters.Length < min || parameters.Length > max)
+                {
+                    return new ActionDispatchFailed(StatusType.InvalidParameterCount);
+                }
+
+                // if we are an instance function we need to lop off the first parameter
+                ArraySegment<IConvertible> paramSlice;
+                if (Action.IsInstance)
+                {
+                    paramSlice = new ArraySegment<IConvertible>(parameters, 1, parameters.Length - 1);
+                }
+                else
+                {
+                    // if we are a static, local, or lambda we only drop the first parameter
+                    // which is the name of the command itself
+                    paramSlice = new ArraySegment<IConvertible>(parameters);
+                }
+
+                object?[] resolvedParams = new object[Action.Parameters.Length];
+                var parameterInfos = Method.GetParameters();
+
+                for (int i = 0; i < Action.Parameters.Length; i++)
+                {
+                    var p = Action.Parameters[i];
+
+                    if (p is TokenParameter tp)
                     {
-                        requirementDescription = $"at most {max} {DiagnosticUtility.EnglishPluraliseNounCount(max, "parameter")}";
+                        resolvedParams[i] = token;
+                        continue;
                     }
-                    else if (min != max)
+
+                    var pType = parameterInfos[i].ParameterType;
+                    
+                    // if we are an array we eat all the remaining values
+                    if (p.IsArray)
                     {
-                        requirementDescription = $"between {min} and {max} {DiagnosticUtility.EnglishPluraliseNounCount(max, "parameter")}";
+                        // need to get the element type out of the array
+                        pType = parameterInfos[i].ParameterType.GetElementType();
+
+                        var remainingParameters = paramSlice.Count - i;
+                        // if we have no parameters left in the invocation we don't need to bother doing anythign
+                        // we can just make the empty array and put that in
+                        if (remainingParameters < 1)
+                        {
+                            resolvedParams[i] = Array.CreateInstance(pType, 0);
+                            continue;
+                        }
+
+                        var array = Array.CreateInstance(pType, remainingParameters);
+                        for (int j = 0; j < remainingParameters; j++)
+                        {
+                            if (TryConvertParameter(p, paramSlice[i + j], pType, out var value))
+                            {
+                                array.SetValue(value, j);
+                            }
+                            else
+                            {
+                                Debug.LogError($"Unable to determine a way to convert {paramSlice[i + j]} into a {pType.Name}.");
+                                return new ActionDispatchFailed(StatusType.InvalidParameter);
+                            }
+                        }
+                        resolvedParams[i] = array;
                     }
                     else
                     {
-                        requirementDescription = $"{min} {DiagnosticUtility.EnglishPluraliseNounCount(max, "parameter")}";
-                    }
-                    message = $"{this.Name} requires {requirementDescription}, but {argumentCount} {DiagnosticUtility.EnglishPluraliseWasVerb(argumentCount)} provided.";
-                    result = default;
-                    return false;
-                }
-
-                var finalArgs = new object[parameters.Length];
-
-                var paramsArgs = new List<object>();
-
-                for (int i = 0; i < argumentCount; i++)
-                {
-                    object convertedArg;
-                    Converter converter;
-
-                    string arg = args[i];
-
-                    try
-                    {
-                        if (i >= parameters.Length - 1 && lastParameterIsArray)
+                        // because parameters can have default values if we encounter a parameter that we don't have a matching parameter value for we flag it as being defaulted
+                        // this would fail if there was a mix of default and tokens but because we require specific ordering we can trust earlier checks to have caught this
+                        if (i < paramSlice.Count)
                         {
-                            converter = Converters[parameters.Length - 1];
-                            convertedArg = converter != null ? converter?.Invoke(arg) : arg;
-
-                            paramsArgs.Add(convertedArg);
+                            if (TryConvertParameter(p, paramSlice[i], pType, out var value))
+                            {
+                                resolvedParams[i] = value;
+                            }
+                            else
+                            {
+                                Debug.LogError($"Unable to determine a way to convert {paramSlice[i]} into a {pType.Name}.");
+                                return new ActionDispatchFailed(StatusType.InvalidParameter);
+                            }
                         }
                         else
                         {
-                            converter = Converters[i];
-                            convertedArg = converter != null ? converter?.Invoke(arg) : arg;
-
-                            finalArgs[i] = convertedArg;
+                            resolvedParams[i] = System.Type.Missing;
                         }
                     }
-                    catch (Exception e)
+                }
+
+                object returnValue;
+                if (Action.IsInstance)
+                {
+                    // we are an instance method
+                    // which means we need a target and there are two possible target types
+                    // either we are a component or we are converted type
+                    // we check for the converted type first just in case it has a custom converter on a type that is also a mono behaviour
+                    var targetName = parameters[0].ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+                    if (ActionInvoker.TryRuntimeConvert(targetName, Method.DeclaringType, out object? target))
                     {
-                        message = $"Can't convert parameter {i} to {parameters[i].ParameterType.Name}: {e.Message}";
-                        result = default;
-                        return false;
+                        returnValue = this.Method.Invoke(target, resolvedParams);
                     }
-                }
-
-                if (lastParameterIsArray)
-                {
-                    var paramsArray = Array.CreateInstance(parameters[parameters.Length - 1].ParameterType.GetElementType(), paramsArgs.Count);
-                    Array.Copy(paramsArgs.ToArray(), paramsArray, paramsArgs.Count);
-
-                    finalArgs[parameters.Length - 1] = paramsArray;
-                }
-
-                for (int i = argumentCount; i < finalArgs.Length; i++)
-                {
-                    finalArgs[i] = System.Type.Missing;
-                }
-                result = finalArgs;
-                message = default;
-                return true;
-            }
-
-            private (int Min, int Max) ParameterCount
-            {
-                get
-                {
-                    var parameters = Method.GetParameters();
-                    int optional = 0;
-                    foreach (var parameter in parameters)
+                    else if (typeof(UnityEngine.Component).IsAssignableFrom(Method.DeclaringType))
                     {
-                        if (parameter.IsOptional)
+                        var go = GameObject.Find(targetName);
+                        if (go == null)
                         {
-                            optional += 1;
+                            return new ActionDispatchFailed(StatusType.NoTargetFound);
                         }
-                    }
-
-                    int min = parameters.Length - optional;
-                    int max = parameters.Length;
-                    return (min, max);
-                }
-            }
-
-            internal CommandDispatchResult Invoke(DialogueRunner dispatcher, List<string> parameters, out Coroutine commandCoroutine)
-            {
-                object target;
-
-                if (DynamicallyFindsTarget)
-                {
-                    // We need to find a target to call this method on.
-
-                    if (parameters.Count == 0)
-                    {
-                        // We need at least one parameter, which is the
-                        // component to look for
-                        commandCoroutine = default;
-                        return new CommandDispatchResult
+                        target = go.GetComponentInChildren(Method.DeclaringType);
+                        if (target == null)
                         {
-                            Message = $"{this.Name} needs a target, but none was specified",
-                            Status = CommandDispatchResult.StatusType.InvalidParameterCount
-                        };
+                            return new ActionDispatchFailed(StatusType.NoTargetFound);
+                        }
+                        returnValue = this.Method.Invoke(target, resolvedParams);
                     }
-
-                    // First parameter is the name of a game object that has the
-                    // component we're trying to call.
-
-                    var gameObjectName = parameters[0];
-
-                    parameters.RemoveAt(0);
-
-                    var gameObject = GameObject.Find(gameObjectName);
-
-                    if (gameObject == null)
+                    else
                     {
-                        // We couldn't find a target with this name.
-                        commandCoroutine = default;
-                        return new CommandDispatchResult
-                        {
-                            Message = $"No game object named \"{gameObjectName}\" exists",
-                            Status = CommandDispatchResult.StatusType.TargetMissingComponent
-                        };
+                        return new ActionDispatchFailed(StatusType.NoTargetFound);
                     }
-
-                    // We've found a target.  Does it have a component that's
-                    // the right type of object to call the method on?
-                    var targetComponent = gameObject.GetComponent(this.DeclaringType);
-
-                    if (targetComponent == null)
-                    {
-                        commandCoroutine = default;
-                        return new CommandDispatchResult
-                        {
-                            Message = $"{this.Name} can't be called on {gameObjectName}, because it doesn't have a {this.DeclaringType.Name}",
-                            Status = CommandDispatchResult.StatusType.TargetMissingComponent
-                        };
-                    }
-
-                    target = targetComponent;
-                }
-                else if (Method.IsStatic)
-                {
-                    // The method is static; it therefore doesn't need a target.
-                    target = null;
-                }
-                else if (Target != null)
-                {
-                    // The method is an instance method, so use the target we've
-                    // stored.
-                    target = Target;
                 }
                 else
                 {
-                    // We don't know what to call this method on.
-                    throw new InvalidOperationException($"Internal error: {nameof(CommandRegistration)} \"{this.Name}\" has no {nameof(Target)}, but method is not static and ${DynamicallyFindsTarget} is false");
+                    // it's static so I don't need a target
+                    // I can just call it
+                    returnValue = this.Method.Invoke(this.Target, resolvedParams);
                 }
 
-                if (this.TryParseArgs(parameters.ToArray(), out var finalParameters, out var errorMessage) == false)
+                return ProcessFunctionReturn(returnValue);
+            }
+
+            internal IDispatchResult Invoke(string[] parameters, LineCancellationToken token, MonoBehaviour dispatcher)
+            {
+                if (Action is InvalidAction)
                 {
-                    commandCoroutine = default;
-                    return new CommandDispatchResult
-                    {
-                        Status = CommandDispatchResult.StatusType.InvalidParameterCount,
-                        Message = errorMessage,
-                    };
+                    return new ActionDispatchFailed(StatusType.ActionUnknown);
                 }
 
-                var returnValue = this.Method.Invoke(target, finalParameters);
+                if (Action.Type != ActionType.Command)
+                {
+                    return new ActionDispatchFailed(StatusType.ActionUnknown);
+                }
 
+                var (min, max) = Action.NumberOfParameters;
+                if (parameters.Length < min || parameters.Length > max)
+                {
+                    return new ActionDispatchFailed(StatusType.InvalidParameterCount);
+                }
+
+                // I think this is all I need to do to get the right number of parameters
+                // we want a slice of all parameters but the first one
+
+                // if we are an instance command we need to lop off the first two parameters
+                // one for the name of the command
+                // and one for the instance
+                ArraySegment<string> paramSlice;
+                if (Action.IsInstance)
+                {
+                    paramSlice = new ArraySegment<string>(parameters, 2, parameters.Length - 2);
+                }
+                else
+                {
+                    // if we are a static, local, or lambda we only drop the first parameter
+                    // which is the name of the command itself
+                    paramSlice = new ArraySegment<string>(parameters, 1, parameters.Length - 1);
+                }
+                
+                object?[] resolvedParams = new object[Action.Parameters.Length];
+                var parameterInfos = Method.GetParameters();
+
+                for (int i = 0; i < Action.Parameters.Length; i++)
+                {
+                    var p = Action.Parameters[i];
+
+                    if (p is TokenParameter tp)
+                    {
+                        if (tp.IsYarnToken)
+                        {
+                            resolvedParams[i] = token;
+                        }
+                        else
+                        {
+                            resolvedParams[i] = token.HurryUpToken;
+                        }
+                        continue;
+                    }
+
+                    var pType = parameterInfos[i].ParameterType;
+                    
+                    // if we are an array we eat all the remaining values
+                    if (p.IsArray)
+                    {
+                        // need to get the element type out of the array
+                        pType = parameterInfos[i].ParameterType.GetElementType();
+
+                        var remainingParameters = paramSlice.Count - i;
+                        // if we have no parameters left in the invocation we don't need to bother doing anythign
+                        // we can just make the empty array and put that in
+                        if (remainingParameters < 1)
+                        {
+                            resolvedParams[i] = Array.CreateInstance(pType, 0);
+                            continue;
+                        }
+
+                        var array = Array.CreateInstance(pType, remainingParameters);
+                        for (int j = 0; j < remainingParameters; j++)
+                        {
+                            if (TryConvertParameter(p, paramSlice[i + j], pType, out var value))
+                            {
+                                array.SetValue(value, j);
+                            }
+                            else
+                            {
+                                Debug.LogError($"Unable to determine a way to convert {paramSlice[i + j]} into a {pType.Name}.");
+                                return new ActionDispatchFailed(StatusType.InvalidParameter);
+                            }
+                        }
+                        resolvedParams[i] = array;
+                    }
+                    else
+                    {
+                        // because parameters can have default values if we encounter a parameter that we don't have a matching parameter value for we flag it as being defaulted
+                        // this would fail if there was a mix of default and tokens but because we require specific ordering we can trust earlier checks to have caught this
+                        if (i < paramSlice.Count)
+                        {
+                            if (TryConvertParameter(p, paramSlice[i], pType, out var value))
+                            {
+                                resolvedParams[i] = value;
+                            }
+                            else
+                            {
+                                Debug.LogError($"Unable to determine a way to convert {paramSlice[i]} into a {pType.Name}.");
+                                return new ActionDispatchFailed(StatusType.InvalidParameter);
+                            }
+                        }
+                        else
+                        {
+                            resolvedParams[i] = System.Type.Missing;
+                        }
+                    }
+                }
+
+                object returnValue;
+                if (Action.IsInstance)
+                {
+                    // we are an instance method
+                    // which means we need a target and there are two possible target types
+                    // either we are a component or we are converted type
+                    // we check for the converted type first just in case it has a custom converter on a type that is also a mono behaviour
+                    var targetName = parameters[1].ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+                    if (ActionInvoker.TryRuntimeConvert(targetName, Method.DeclaringType, out object? target))
+                    {
+                        returnValue = this.Method.Invoke(target, resolvedParams);
+                    }
+                    else if (typeof(UnityEngine.Component).IsAssignableFrom(Method.DeclaringType))
+                    {
+                        var go = GameObject.Find(targetName);
+                        if (go == null)
+                        {
+                            return new ActionDispatchFailed(StatusType.NoTargetFound);
+                        }
+                        target = go.GetComponentInChildren(Method.DeclaringType);
+                        if (target == null)
+                        {
+                            return new ActionDispatchFailed(StatusType.NoTargetFound);
+                        }
+                        returnValue = this.Method.Invoke(target, resolvedParams);
+                    }
+                    else
+                    {
+                        return new ActionDispatchFailed(StatusType.NoTargetFound);
+                    }
+                }
+                else
+                {
+                    // it's static so I don't need a target
+                    // I can just call it
+                    returnValue = this.Method.Invoke(this.Target, resolvedParams);
+                }
+
+                return ProcessCommandReturn(returnValue, dispatcher);
+            }
+
+            private static IDispatchResult ProcessFunctionReturn(object? returnValue)
+            {
+                if (returnValue is null)
+                {
+                    return new ActionDispatchFailed(StatusType.InvalidReturn);
+                }
+
+                // the cases here are generated from Runtime/Commands/taskgyb.py
+                return returnValue switch
+                {
+                    // are we a synchronous function, ie we already have the final value ready to be pushed into the vm
+                    int st => new FunctionDispatchSucceededSynchronously(st),
+                    float st => new FunctionDispatchSucceededSynchronously(st),
+                    double st => new FunctionDispatchSucceededSynchronously(st),
+                    sbyte st => new FunctionDispatchSucceededSynchronously(st),
+                    byte st => new FunctionDispatchSucceededSynchronously(st),
+                    short st => new FunctionDispatchSucceededSynchronously(st),
+                    ushort st => new FunctionDispatchSucceededSynchronously(st),
+                    uint st => new FunctionDispatchSucceededSynchronously(st),
+                    long st => new FunctionDispatchSucceededSynchronously(st),
+                    ulong st => new FunctionDispatchSucceededSynchronously(st),
+                    decimal st => new FunctionDispatchSucceededSynchronously(st),
+                    string st => new FunctionDispatchSucceededSynchronously(st),
+                    bool st => new FunctionDispatchSucceededSynchronously(st),
+
+                    // are we any of the myriad tasks?
+                    System.Threading.Tasks.Task<int> at => new FunctionDispatchSucceededAsynchronously<int>(at),
+                    System.Threading.Tasks.Task<float> at => new FunctionDispatchSucceededAsynchronously<float>(at),
+                    System.Threading.Tasks.Task<double> at => new FunctionDispatchSucceededAsynchronously<double>(at),
+                    System.Threading.Tasks.Task<sbyte> at => new FunctionDispatchSucceededAsynchronously<sbyte>(at),
+                    System.Threading.Tasks.Task<byte> at => new FunctionDispatchSucceededAsynchronously<byte>(at),
+                    System.Threading.Tasks.Task<short> at => new FunctionDispatchSucceededAsynchronously<short>(at),
+                    System.Threading.Tasks.Task<ushort> at => new FunctionDispatchSucceededAsynchronously<ushort>(at),
+                    System.Threading.Tasks.Task<uint> at => new FunctionDispatchSucceededAsynchronously<uint>(at),
+                    System.Threading.Tasks.Task<long> at => new FunctionDispatchSucceededAsynchronously<long>(at),
+                    System.Threading.Tasks.Task<ulong> at => new FunctionDispatchSucceededAsynchronously<ulong>(at),
+                    System.Threading.Tasks.Task<decimal> at => new FunctionDispatchSucceededAsynchronously<decimal>(at),
+                    System.Threading.Tasks.Task<string> at => new FunctionDispatchSucceededAsynchronously<string>(at),
+                    System.Threading.Tasks.Task<bool> at => new FunctionDispatchSucceededAsynchronously<bool>(at),
+#if USE_UNITASK
+                    Cysharp.Threading.Tasks.UniTask<int> at => new FunctionDispatchSucceededAsynchronously<int>(at),
+                    Cysharp.Threading.Tasks.UniTask<float> at => new FunctionDispatchSucceededAsynchronously<float>(at),
+                    Cysharp.Threading.Tasks.UniTask<double> at => new FunctionDispatchSucceededAsynchronously<double>(at),
+                    Cysharp.Threading.Tasks.UniTask<sbyte> at => new FunctionDispatchSucceededAsynchronously<sbyte>(at),
+                    Cysharp.Threading.Tasks.UniTask<byte> at => new FunctionDispatchSucceededAsynchronously<byte>(at),
+                    Cysharp.Threading.Tasks.UniTask<short> at => new FunctionDispatchSucceededAsynchronously<short>(at),
+                    Cysharp.Threading.Tasks.UniTask<ushort> at => new FunctionDispatchSucceededAsynchronously<ushort>(at),
+                    Cysharp.Threading.Tasks.UniTask<uint> at => new FunctionDispatchSucceededAsynchronously<uint>(at),
+                    Cysharp.Threading.Tasks.UniTask<long> at => new FunctionDispatchSucceededAsynchronously<long>(at),
+                    Cysharp.Threading.Tasks.UniTask<ulong> at => new FunctionDispatchSucceededAsynchronously<ulong>(at),
+                    Cysharp.Threading.Tasks.UniTask<decimal> at => new FunctionDispatchSucceededAsynchronously<decimal>(at),
+                    Cysharp.Threading.Tasks.UniTask<string> at => new FunctionDispatchSucceededAsynchronously<string>(at),
+                    Cysharp.Threading.Tasks.UniTask<bool> at => new FunctionDispatchSucceededAsynchronously<bool>(at),
+#endif
+
+#if UNITY_2023_1_OR_NEWER
+                    UnityEngine.Awaitable<int> at => new FunctionDispatchSucceededAsynchronously<int>(at),
+                    UnityEngine.Awaitable<float> at => new FunctionDispatchSucceededAsynchronously<float>(at),
+                    UnityEngine.Awaitable<double> at => new FunctionDispatchSucceededAsynchronously<double>(at),
+                    UnityEngine.Awaitable<sbyte> at => new FunctionDispatchSucceededAsynchronously<sbyte>(at),
+                    UnityEngine.Awaitable<byte> at => new FunctionDispatchSucceededAsynchronously<byte>(at),
+                    UnityEngine.Awaitable<short> at => new FunctionDispatchSucceededAsynchronously<short>(at),
+                    UnityEngine.Awaitable<ushort> at => new FunctionDispatchSucceededAsynchronously<ushort>(at),
+                    UnityEngine.Awaitable<uint> at => new FunctionDispatchSucceededAsynchronously<uint>(at),
+                    UnityEngine.Awaitable<long> at => new FunctionDispatchSucceededAsynchronously<long>(at),
+                    UnityEngine.Awaitable<ulong> at => new FunctionDispatchSucceededAsynchronously<ulong>(at),
+                    UnityEngine.Awaitable<decimal> at => new FunctionDispatchSucceededAsynchronously<decimal>(at),
+                    UnityEngine.Awaitable<string> at => new FunctionDispatchSucceededAsynchronously<string>(at),
+                    UnityEngine.Awaitable<bool> at => new FunctionDispatchSucceededAsynchronously<bool>(at),
+#endif
+
+                    YarnTask<int> at => new FunctionDispatchSucceededAsynchronously<int>(at),
+                    YarnTask<float> at => new FunctionDispatchSucceededAsynchronously<float>(at),
+                    YarnTask<double> at => new FunctionDispatchSucceededAsynchronously<double>(at),
+                    YarnTask<sbyte> at => new FunctionDispatchSucceededAsynchronously<sbyte>(at),
+                    YarnTask<byte> at => new FunctionDispatchSucceededAsynchronously<byte>(at),
+                    YarnTask<short> at => new FunctionDispatchSucceededAsynchronously<short>(at),
+                    YarnTask<ushort> at => new FunctionDispatchSucceededAsynchronously<ushort>(at),
+                    YarnTask<uint> at => new FunctionDispatchSucceededAsynchronously<uint>(at),
+                    YarnTask<long> at => new FunctionDispatchSucceededAsynchronously<long>(at),
+                    YarnTask<ulong> at => new FunctionDispatchSucceededAsynchronously<ulong>(at),
+                    YarnTask<decimal> at => new FunctionDispatchSucceededAsynchronously<decimal>(at),
+                    YarnTask<string> at => new FunctionDispatchSucceededAsynchronously<string>(at),
+                    YarnTask<bool> at => new FunctionDispatchSucceededAsynchronously<bool>(at),
+
+                    _ => new ActionDispatchFailed(StatusType.InvalidReturn),
+                };
+            }
+
+            private static IDispatchResult ProcessCommandReturn(object? returnValue, MonoBehaviour dispatcher)
+            {
                 if (returnValue is Coroutine coro)
                 {
-                    commandCoroutine = coro;
-                    return new CommandDispatchResult
-                    {
-                        Status = CommandDispatchResult.StatusType.SucceededAsync
-                    };
+                    // The method returned a Coroutine object.
+                    return new CommandDispatchSucceededAsynchronously(dispatcher.WaitForCoroutine(coro));
                 }
+                else if (returnValue is YarnTask yarnTask)
+                {
+                    return new CommandDispatchSucceededAsynchronously(yarnTask);
+                }
+#if UNITY_2023_1_OR_NEWER
+                else if (returnValue is Awaitable awaitable)
+                {
+                    // The method returned an Awaitable. Convert it to a
+                    // YarnTask. (Awaitables implement IEnumerator, so check
+                    // this before testing against other IEnumerators like
+                    // coroutines.)
+                    return new CommandDispatchSucceededAsynchronously(awaitable);
+                }
+#endif
+                else if (returnValue is System.Threading.Tasks.Task task)
+                {
+                    // The method returned a task. Convert it to a YarnTask.
+                    return new CommandDispatchSucceededAsynchronously(task);
+                }
+#if USE_UNITASK
+                else if (returnValue is Cysharp.Threading.Tasks.UniTask unitask)
+                {
+                    // The method returned a UniTask. Convert it to a YarnTask.
+                    return new CommandDispatchSucceededAsynchronously(unitask);
+                }
+#endif
                 else if (returnValue is IEnumerator enumerator)
                 {
-                    commandCoroutine = dispatcher.StartCoroutine(enumerator);
-                    return new CommandDispatchResult
-                    {
-                        Status = CommandDispatchResult.StatusType.SucceededAsync
-                    };
+                    // The method returned an IEnumerator.
+                    return new CommandDispatchSucceededAsynchronously(dispatcher.WaitForCoroutine(enumerator));
                 }
                 else
                 {
-                    commandCoroutine = null;
-                    return new CommandDispatchResult
-                    {
-                        Status = CommandDispatchResult.StatusType.SucceededSync
-                    };
+                    // The method returned no value.
+                    return new CommandDispatchSucceededSynchronously();
                 }
             }
-
-            public string UsageString
-            {
-                get
-                {
-                    var components = new List<string>();
-
-                    components.Add(Name);
-
-                    if (DynamicallyFindsTarget)
-                    {
-                        var declaringTypeName = DeclaringType.Name;
-                        components.Add($"target <i>({declaringTypeName})</i>");
-                    }
-
-                    foreach (var parameter in Method.GetParameters())
-                    {
-                        var type = parameter.ParameterType;
-                        string typeName;
-
-                        if (TypeFriendlyNames.TryGetValue(type, out typeName) == false)
-                        {
-                            typeName = type.Name;
-                        }
-
-                        string displayName = $"{parameter.Name} <i>({typeName})</i>";
-
-                        if (parameter.IsOptional)
-                        {
-                            displayName = $"[{displayName} = {parameter.DefaultValue}]";
-
-                        }
-
-                        components.Add(displayName);
-                    }
-
-                    return string.Join(" ", components);
-                }
-            }
-
-            readonly Dictionary<Type, string> TypeFriendlyNames = new Dictionary<Type, string> {
-                { typeof(int), "number" },
-                { typeof(float), "number" },
-                { typeof(double), "number" },
-                { typeof(Decimal), "number" },
-                { typeof(string), "string" },
-                { typeof(bool), "bool" },
-            };
-
         }
 
-        private Dictionary<string, CommandRegistration> _commands = new Dictionary<string, CommandRegistration>();
+        private Dictionary<string, RuntimeAction> _commands = new Dictionary<string, RuntimeAction>();
+        private Dictionary<string, RuntimeAction> _functions = new Dictionary<string, RuntimeAction>();
 
-        public Library Library { get; }
-        public DialogueRunner DialogueRunner { get; }
-
-        public IEnumerable<ICommand> Commands => _commands.Values;
-
-        public Actions(DialogueRunner dialogueRunner, Library library)
-        {
-            Library = library;
-            DialogueRunner = dialogueRunner;
-        }
-
-        private static string GetFullMethodName(MethodInfo method)
-        {
-            return $"{method.DeclaringType.FullName}.{method.Name}";
-        }
-
-        public void RegisterActions()
-        {
-            foreach (var registrationFunction in ActionRegistrationMethods)
-            {
-                registrationFunction.Invoke(DialogueRunner);
-            }
-        }
-
+        /// <inheritdoc />
         public void AddCommandHandler(string commandName, Delegate handler)
         {
             if (commandName.Contains(' '))
@@ -472,26 +1035,54 @@ namespace Yarn.Unity
             }
             else
             {
-                _commands.Add(commandName, new CommandRegistration(commandName, handler));
+#if YARN_SOURCE_GENERATION_DEBUG_LOGGING
+                Debug.Log($"Registering command {commandName}");
+#endif
+                _commands.Add(commandName, new RuntimeAction(commandName, handler, ActionType.Command));
             }
         }
 
+        /// <inheritdoc />
         public void AddFunction(string name, Delegate implementation)
         {
             if (name.Contains(' '))
             {
-                Debug.LogError($"Cannot add function {name}: command names are not allowed to contain spaces.");
+                Debug.LogError($"Cannot add function {name}: function names are not allowed to contain spaces.");
                 return;
             }
 
-            if (Library.FunctionExists(name))
+            if (_functions.ContainsKey(name))
             {
                 Debug.LogError($"Cannot add function {name}: one already exists");
                 return;
             }
-            Library.RegisterFunction(name, implementation);
+#if YARN_SOURCE_GENERATION_DEBUG_LOGGING
+            Debug.Log($"Registering command {name} from method {implementation.Method.DeclaringType.FullName}.{implementation.Method.Name}");
+#endif
+
+            _functions.Add(name, new RuntimeAction(name, implementation, ActionType.Function));
+        }
+        internal void AddFunction(string name, MethodInfo implementation)
+        {
+            if (name.Contains(' '))
+            {
+                Debug.LogError($"Cannot add function {name}: function names are not allowed to contain spaces.");
+                return;
+            }
+
+            if (_functions.ContainsKey(name))
+            {
+                Debug.LogError($"Cannot add function {name}: one already exists");
+                return;
+            }
+#if YARN_SOURCE_GENERATION_DEBUG_LOGGING
+            Debug.Log($"Registering command {name} from method {implementation.DeclaringType.FullName}.{implementation.Name}");
+#endif
+
+            _functions.Add(name, new RuntimeAction(name, implementation, ActionType.Function));
         }
 
+        /// <inheritdoc />
         public void AddCommandHandler(string commandName, MethodInfo methodInfo)
         {
             if (commandName.Contains(' '))
@@ -507,80 +1098,39 @@ namespace Yarn.Unity
             }
             else
             {
-                _commands.Add(commandName, new CommandRegistration(commandName, methodInfo));
+                _commands.Add(commandName, new RuntimeAction(commandName, methodInfo, ActionType.Command));
             }
         }
-
-        public void AddCommandHandler(string commandName, Func<Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-
-        // GYB1 START
-        public void AddCommandHandler<T1>(string commandName, Func<T1, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2>(string commandName, Func<T1, T2, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3>(string commandName, Func<T1, T2, T3, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Func<T1, T2, T3, T4, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Func<T1, T2, T3, T4, T5, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Func<T1, T2, T3, T4, T5, T6, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        // GYB1 END
-
-        public void AddCommandHandler(string commandName, Action handler) => AddCommandHandler(commandName, (Delegate)handler);
-
-        // GYB2 START
-        public void AddCommandHandler<T1>(string commandName, Action<T1> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2>(string commandName, Action<T1, T2> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3>(string commandName, Action<T1, T2, T3> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Action<T1, T2, T3, T4> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Action<T1, T2, T3, T4, T5> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Action<T1, T2, T3, T4, T5, T6> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8, T9> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> handler) => AddCommandHandler(commandName, (Delegate)handler);
-        // GYB2 END
-
-        public void AddFunction<TResult>(string name, Func<TResult> implementation) => AddFunction(name, (Delegate)implementation);
-
-        // GYB3 START
-        public void AddFunction<T1, TResult>(string name, Func<T1, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, TResult>(string name, Func<T1, T2, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, T3, TResult>(string name, Func<T1, T2, T3, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, T3, T4, TResult>(string name, Func<T1, T2, T3, T4, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, T3, T4, T5, TResult>(string name, Func<T1, T2, T3, T4, T5, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, T3, T4, T5, T6, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, T3, T4, T5, T6, T7, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-        // GYB3 END
-
+        /// <inheritdoc />
         public void RemoveCommandHandler(string commandName)
         {
             if (_commands.Remove(commandName) == false)
             {
                 Debug.LogError($"Can't remove command {commandName}, because no command with this name is currently registered.");
             }
-
         }
 
+        /// <inheritdoc />
         public void RemoveFunction(string name)
         {
-            if (Library.FunctionExists(name) == false)
+            if (!_functions.ContainsKey(name))
             {
                 Debug.LogError($"Cannot remove function {name}: no function with that name exists in the library");
                 return;
             }
-            Library.DeregisterFunction(name);
+            _functions.Remove(name);
         }
 
-        public void SetupForProject(YarnProject yarnProject)
+        internal bool CanInvoke(string functionName)
         {
-            // no-op
+            return _functions.ContainsKey(functionName);
+        }
+        internal bool CanDispatch(string commandName)
+        {
+            return _commands.ContainsKey(commandName);
         }
 
-        CommandDispatchResult ICommandDispatcher.DispatchCommand(string command, out Coroutine commandCoroutine)
+        internal IDispatchResult DispatchCommand(string command, MonoBehaviour coroutineHost, LineCancellationToken token)
         {
             var commandPieces = new List<string>(DialogueRunner.SplitCommandText(command));
 
@@ -588,304 +1138,91 @@ namespace Yarn.Unity
             {
                 // No text was found inside the command, so we won't be able to
                 // find it.
-                commandCoroutine = default;
-                return new CommandDispatchResult
-                {
-                    Status = CommandDispatchResult.StatusType.CommandUnknown
-                };
+                return new ActionDispatchFailed(StatusType.ActionUnknown);
             }
 
             if (_commands.TryGetValue(commandPieces[0], out var registration))
             {
-                // The first part of the command is the command name itself. Remove
-                // it to get the collection of parameters that were passed to the
-                // command.
-                commandPieces.RemoveAt(0);
-
-                return registration.Invoke(DialogueRunner, commandPieces, out commandCoroutine);
+                return registration.Invoke(commandPieces.ToArray(), token, coroutineHost);
             }
             else
             {
-                commandCoroutine = default;
-                return new CommandDispatchResult
-                {
-                    Status = CommandDispatchResult.StatusType.CommandUnknown
-                };
+                return new ActionDispatchFailed(StatusType.ActionUnknown);
             }
         }
 
-        private static Converter[] CreateConverters(MethodInfo method)
+        internal async YarnTask<IConvertible> Invoke(string functionName, IConvertible[] parameters, System.Threading.CancellationToken token)
         {
-            ParameterInfo[] parameterInfos = method.GetParameters();
-
-            Converter[] result = (Func<string, object>[])Array.CreateInstance(typeof(Func<string, object>), parameterInfos.Length);
-
-            int i = 0;
-
-            foreach (var parameterInfo in parameterInfos)
+            if (_functions.TryGetValue(functionName, out var function))
             {
-                if (parameterInfo.ParameterType.IsArray)
+                var result = function.Invoke(parameters, token);
+                if (result is ActionDispatchFailed)
                 {
-                    // Array parameters are permitted, but only if they're the
-                    // last parameter and are an array of strings
-                    if (i != parameterInfos.Length - 1)
-                    {
-                        throw new ArgumentException($"Can't register method {method.Name}: Parameter {i + 1} ({parameterInfo.Name}): array parameters are required to be last.");
-                    }
-                    if (parameterInfo.ParameterType.GetElementType() != typeof(string))
-                    {
-                        throw new ArgumentException($"Can't register method {method.Name}: Parameter {i + 1} ({parameterInfo.Name}): array parameters are required to be string arrays.");
-                    }
-                    // Individual elements of the array will be passed to this
-                    // converter; we already know that they'll all be strings,
-                    // so use them as-is.
-                    result[i] = arg => arg;
+                    throw new ArgumentException($"Unable to dispatch the {functionName} function");
                 }
-                else
+
+                if (result is FunctionDispatchSucceededSynchronously fds)
                 {
-                    result[i] = CreateConverter(parameterInfo, i);
+                    return fds.Result;
                 }
-                i++;
-            }
-            return result;
-        }
 
-        private static Converter CreateConverter(ParameterInfo parameter, int index)
-        {
-            var targetType = parameter.ParameterType;
-
-            // well, I mean...
-            if (targetType == typeof(string)) { return arg => arg; }
-
-            // find the GameObject.
-            if (typeof(GameObject).IsAssignableFrom(targetType))
-            {
-                return GameObject.Find;
-            }
-
-            // find components of the GameObject with the component, if available
-            if (typeof(Component).IsAssignableFrom(targetType))
-            {
-                return arg =>
+                // this happened to my buddy Eric
+                if (result is FunctionDispatchSucceededAsynchronously<int> fda0)
                 {
-                    GameObject gameObject = GameObject.Find(arg);
-                    if (gameObject == null)
-                    {
-                        return null;
-                    }
-                    return gameObject.GetComponentInChildren(targetType);
-                };
-            }
-
-            // bools can take "true" or "false", or the parameter name.
-            if (typeof(bool).IsAssignableFrom(targetType))
-            {
-                return arg =>
-                {
-                    // If the argument is the name of the parameter, interpret
-                    // the argument as 'true'.
-                    if (arg.Equals(parameter.Name, StringComparison.InvariantCultureIgnoreCase))
-                    {
-                        return true;
-                    }
-
-                    // If the argument can be parsed as boolean true or false,
-                    // return that result.
-                    if (bool.TryParse(arg, out bool res))
-                    {
-                        return res;
-                    }
-
-                    // We can't parse the argument.
-                    throw new ArgumentException(
-                        $"Can't convert the given parameter at position {index + 1} (\"{arg}\") to parameter " +
-                        $"{parameter.Name} of type {typeof(bool).FullName}.");
-                };
-            }
-
-            // Fallback: try converting using IConvertible.
-            return arg =>
-            {
-                try
-                {
-                    return Convert.ChangeType(arg, targetType, CultureInfo.InvariantCulture);
+                    return await fda0.Task;
                 }
-                catch (Exception e)
+                else if (result is FunctionDispatchSucceededAsynchronously<float> fda1)
                 {
-                    throw new ArgumentException(
-                        $"Can't convert the given parameter at position {index + 1} (\"{arg}\") to parameter " +
-                        $"{parameter.Name} of type {targetType.FullName}: {e}", e);
+                    return await fda1.Task;
                 }
-            };
-        }
-
-
-        internal static HashSet<System.Action<IActionRegistration>> ActionRegistrationMethods = new HashSet<Action<IActionRegistration>>();
-
-
-        public static void AddRegistrationMethod(Action<IActionRegistration> registerActions)
-        {
-            ActionRegistrationMethods.Add(registerActions);
-        }
-
-        public static Yarn.Library GetLibrary()
-        {
-            var library = new Yarn.Library();
-
-            var proxy = new LibraryRegistrationProxy(library);
-
-            foreach (var registrationMethod in ActionRegistrationMethods)
-            {
-                registrationMethod.Invoke(proxy);
-            }
-
-            return library;
-        }
-
-        public void AddCommandHandler(string commandName, Func<IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-
-        // GYB4 START
-        public void AddCommandHandler<T1>(string commandName, Func<T1, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2>(string commandName, Func<T1, T2, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3>(string commandName, Func<T1, T2, T3, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Func<T1, T2, T3, T4, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Func<T1, T2, T3, T4, T5, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Func<T1, T2, T3, T4, T5, T6, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, IEnumerator> handler)
-        {
-            this.AddCommandHandler(commandName, (Delegate)handler);
-        }
-        // GYB4 END
-
-        /// <summary>
-        /// A helper class that registers functions into a <see
-        /// cref="Yarn.Library"/>.
-        /// </summary>
-        private class LibraryRegistrationProxy : IActionRegistration
-        {
-            private Library library;
-
-            public LibraryRegistrationProxy(Library library)
-            {
-                this.library = library;
-            }
-
-            public void AddCommandHandler(string commandName, Delegate handler)
-            {
-                // No action; this class does not handle commands, only functions.
-                return;
-            }
-
-            public void AddCommandHandler(string commandName, Func<Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-
-            public void AddCommandHandler(string commandName, MethodInfo methodInfo) => AddCommandHandler(commandName, (Delegate)null);
-
-            // GYB5 START
-            public void AddCommandHandler<T1>(string commandName, Func<T1, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2>(string commandName, Func<T1, T2, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3>(string commandName, Func<T1, T2, T3, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Func<T1, T2, T3, T4, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Func<T1, T2, T3, T4, T5, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Func<T1, T2, T3, T4, T5, T6, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, Coroutine> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            // GYB5 END
-
-            public void AddCommandHandler(string commandName, Func<IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-
-            // GYB6 START
-            public void AddCommandHandler<T1>(string commandName, Func<T1, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2>(string commandName, Func<T1, T2, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3>(string commandName, Func<T1, T2, T3, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Func<T1, T2, T3, T4, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Func<T1, T2, T3, T4, T5, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Func<T1, T2, T3, T4, T5, T6, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, IEnumerator> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            // GYB6 END
-
-            public void AddCommandHandler(string commandName, Action handler) => AddCommandHandler(commandName, (Delegate)handler);
-
-            // GYB7 START
-            public void AddCommandHandler<T1>(string commandName, Action<T1> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2>(string commandName, Action<T1, T2> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3>(string commandName, Action<T1, T2, T3> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4>(string commandName, Action<T1, T2, T3, T4> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5>(string commandName, Action<T1, T2, T3, T4, T5> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6>(string commandName, Action<T1, T2, T3, T4, T5, T6> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8, T9> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            public void AddCommandHandler<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>(string commandName, Action<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> handler) => AddCommandHandler(commandName, (Delegate)handler);
-            // GYB7 END
-
-            public void AddFunction(string name, Delegate implementation)
-            {
-                // Check to see if the function already exists in our Library,
-                // and error out if it does
-                if (library.FunctionExists(name))
+                else if (result is FunctionDispatchSucceededAsynchronously<double> fda2)
                 {
-                    throw new ArgumentException($"Cannot register function {name}: a function with this name already exists");
+                    return await fda2.Task;
                 }
-                // Register this function in the library
-                library.RegisterFunction(name, implementation);
+                else if (result is FunctionDispatchSucceededAsynchronously<sbyte> fda3)
+                {
+                    return await fda3.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<byte> fda4)
+                {
+                    return await fda4.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<short> fda5)
+                {
+                    return await fda5.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<ushort> fda6)
+                {
+                    return await fda6.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<uint> fda7)
+                {
+                    return await fda7.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<long> fda8)
+                {
+                    return await fda8.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<ulong> fda9)
+                {
+                    return await fda9.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<decimal> fda10)
+                {
+                    return await fda10.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<string> fda11)
+                {
+                    return await fda11.Task;
+                }
+                else if (result is FunctionDispatchSucceededAsynchronously<bool> fda12)
+                {
+                    return await fda12.Task;
+                }
+
+                throw new ArgumentException($"Unable to correctly dispatch the {functionName} function it dispatched as a {result.GetType()}");
             }
-
-            public void AddFunction<TResult>(string name, Func<TResult> implementation) => AddFunction(name, (Delegate)implementation);
-
-            // GYB8 START
-            public void AddFunction<T1, TResult>(string name, Func<T1, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, TResult>(string name, Func<T1, T2, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, T3, TResult>(string name, Func<T1, T2, T3, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, T3, T4, TResult>(string name, Func<T1, T2, T3, T4, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, T3, T4, T5, TResult>(string name, Func<T1, T2, T3, T4, T5, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, T3, T4, T5, T6, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, T3, T4, T5, T6, T7, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            public void AddFunction<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult>(string name, Func<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, TResult> implementation) => AddFunction(name, (Delegate)implementation);
-            // GYB8 END
-
-            public void RemoveCommandHandler(string commandName) => throw new InvalidOperationException("This class does not support removing actions.");
-
-            public void RemoveFunction(string name) => throw new InvalidOperationException("This class does not support removing actions.");
+            throw new ArgumentException($"Unable to find a function called {functionName}");
         }
     }
 }
